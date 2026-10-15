@@ -1,0 +1,35 @@
+# Server mode. The factory container is the orchestrator. Each agent step runs in its own
+# sibling container on the host's Docker (SANDBOX=docker), so the data folder is mounted at
+# the SAME path inside and outside: those sibling containers are given host paths.
+services:
+  factory:
+    build: .
+    image: software-factory          # also the image each agent container uses
+    restart: unless-stopped
+    init: true                       # PID 1 that passes docker stop's TERM on to the daemon
+    # On docker stop the daemon stops the running ticket and its agent containers; the ticket
+    # stays claimed and resumes from its journal when the container starts again.
+    stop_grace_period: 60s
+    environment:
+      # The one settings + secrets file, kept in the data folder: copy config.example.env there.
+      # Leave REPO, DATA_DIR, AUTH_HOME and SANDBOX out of it: they are set here.
+      FACTORY_CONFIG: ${FACTORY_DATA:-/srv/factory}/config.env
+      DATA_DIR: ${FACTORY_DATA:-/srv/factory}
+      REPO: ${FACTORY_DATA:-/srv/factory}/repo
+      # Agent CLI login files, laid out like a home folder: secrets/home/.codex/auth.json, ...
+      AUTH_HOME: ${FACTORY_DATA:-/srv/factory}/secrets/home
+      SANDBOX: docker
+    volumes:
+      - ${FACTORY_DATA:-/srv/factory}:${FACTORY_DATA:-/srv/factory}
+      - /var/run/docker.sock:/var/run/docker.sock   # lets the factory start agent containers
+    healthcheck:                     # daemon alive and the host's Docker reachable
+      test: ["CMD", "/factory/factory.sh", "health"]
+      interval: 60s
+      timeout: 20s
+      start_period: 120s             # the first start clones the repo and runs ff doctor
+      retries: 3
+    logging:                         # the daemon logs forever: keep the last 50 MB
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    stdin_open: true
+    tty: true

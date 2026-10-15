@@ -1,0 +1,8 @@
+.env
+.git
+config.env
+credentials.json
+runs
+secrets
+state
+worktrees

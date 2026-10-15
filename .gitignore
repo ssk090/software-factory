@@ -1,0 +1,10 @@
+config.env
+runs/
+worktrees/
+state/
+.env
+secrets/
+__pycache__/
+credentials.json
+.DS_Store
+.ruff_cache/

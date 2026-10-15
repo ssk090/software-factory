@@ -1,0 +1,39 @@
+# Every push and PR: lint, unit tests, and the whole pipeline end to end (no network: fake
+# tracker, gh and agents). The docker job also builds the image and runs agents in the sandbox.
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck -S warning -x factory.sh docker-entrypoint.sh integrations/cursor-cloud.sh display/*.sh sandbox/*.sh tracker/*.sh
+          shellcheck -S warning -e SC2034 -x tests/*.sh   # test checks read variables inside eval strings
+      - name: unit tests
+        run: python3 -m unittest -v test_router
+      - name: git identity for the scratch repos
+        run: git config --global user.name ci && git config --global user.email ci@localhost && git config --global init.defaultBranch main
+      - name: e2e, pass
+        run: tests/e2e.sh none headless pass
+      - name: e2e, coder crashes
+        run: tests/e2e.sh none headless fail
+      - name: e2e, coder deletes spec tests
+        run: tests/e2e.sh none headless deltests
+      - name: cursor cloud handoff
+        run: bash tests/cloud.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the image
+        run: docker build -t software-factory .
+      - name: git identity for the scratch repos
+        run: git config --global user.name ci && git config --global user.email ci@localhost && git config --global init.defaultBranch main
+      - name: e2e in the docker sandbox
+        run: tests/e2e.sh docker headless pass
