@@ -1,6 +1,6 @@
 ---
 name: plan
-skills: codebase-design, writing-plans
+skills: codebase-design, writing-plans, pstack/principle-sequence-verifiable-units, pstack/principle-subtract-before-you-add
 ---
 # Agent: planner
 

@@ -1,6 +1,6 @@
 ---
 name: spec
-skills: to-spec, domain-modeling
+skills: to-spec, domain-modeling, pstack/sharpen, pstack/principle-never-block-on-the-human
 ---
 # Agent: spec writer
 

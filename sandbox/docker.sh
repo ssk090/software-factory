@@ -1,7 +1,11 @@
 # shellcheck shell=bash
 # Sandbox: docker. Each step gets a fresh container, removed afterwards. It sees only this
 # ticket's worktree, its run dir, the repo's .git (needed to commit) and the step's agent login
-# files and keys. No home dir, no SSH keys, no GitHub token, no other tickets.
+# files and keys. No home dir, no SSH keys, no GitHub token, no other tickets' worktrees. The
+# ticket guard hook (cell.sh) stops it from changing other tickets' refs in the shared .git.
+# CACHE_VOLUME: one docker volume of package downloads (npm, pnpm, yarn, pip, go, bun) that every
+# worktree shares, so a new worktree does not download everything again. It holds packages only,
+# never agent sessions.
 # Paths are the same inside and outside. Contract: see sandbox/none.sh.
 : "${SANDBOX_IMAGE:=software-factory}" "${SANDBOX_ARGS:=}"
 
@@ -21,10 +25,14 @@ sandbox_cmd() {
   local args=(docker run --rm --name "$name" -w "$cwd"
     -v "$cwd:$cwd" -v "$RUN:$RUN" -v "$REPO/.git:$REPO/.git"
     -e PROMPT -e IS_SANDBOX=1
-    -e GIT_AUTHOR_NAME="$who" -e GIT_COMMITTER_NAME="$who" -e GIT_AUTHOR_EMAIL="$mail" -e GIT_COMMITTER_EMAIL="$mail"
-    -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*')
+    -e GIT_AUTHOR_NAME="$who" -e GIT_COMMITTER_NAME="$who" -e GIT_AUTHOR_EMAIL="$mail" -e GIT_COMMITTER_EMAIL="$mail")
+  if [ -n "${CACHE_VOLUME:-}" ]; then
+    args+=(-v "$CACHE_VOLUME:/cache" -e XDG_CACHE_HOME=/cache/xdg -e npm_config_cache=/cache/npm
+      -e npm_config_store_dir=/cache/pnpm-store -e YARN_CACHE_FOLDER=/cache/yarn -e PIP_CACHE_DIR=/cache/pip
+      -e GOMODCACHE=/cache/go/mod -e BUN_INSTALL_CACHE_DIR=/cache/bun)
+  fi
   for p in $AGENT_AUTH; do [ -e "$AUTH_HOME/$p" ] && args+=(-v "$AUTH_HOME/$p:/root/$p"); done
-  for e in $AGENT_ENV; do args+=(-e "$e"); done
+  for e in $AGENT_ENV ${CELL_ENV:-}; do args+=(-e "$e"); done
   # shellcheck disable=SC2206  # SANDBOX_ARGS holds extra docker flags, e.g. "--cpus 2 --memory 6g"
   args+=($SANDBOX_ARGS --entrypoint bash "$SANDBOX_IMAGE" -c "$cmd")
   # The docker client ignores signals, so a watchdog kills the container at the time limit.

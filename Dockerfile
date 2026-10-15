@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Agent CLIs used by router.json: Codex, Claude Code, OpenCode, pi (npm) and Cursor (its installer).
 # Pinned, so a rebuild gets the CLIs that were tested. To upgrade: bump a version, rebuild, run
 # tests/e2e.sh docker. Cursor's installer has no version pin.
-ARG AGENT_PACKAGES="@openai/codex@0.162.1 @anthropic-ai/claude-code@2.1.299 opencode-ai@1.19.0 @earendil-works/pi-coding-agent@1.2.0"
+ARG AGENT_PACKAGES="@openai/codex@0.162.1 @anthropic-ai/claude-code@2.1.300 opencode-ai@1.19.0 @earendil-works/pi-coding-agent@1.2.0"
 RUN npm install -g $AGENT_PACKAGES \
     && curl -fsSL https://cursor.com/install | bash
 ENV PATH="/root/.local/bin:$PATH"

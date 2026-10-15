@@ -1,6 +1,6 @@
 ---
 name: code
-skills: implement, tdd, ponytail
+skills: implement, tdd, ponytail, pstack/principle-prove-it-works, pstack/principle-fix-root-causes
 ---
 # Agent: coder
 
@@ -12,11 +12,12 @@ Input in RUN_DIR (see the Context line): ticket.md, comments.md, spec.md, plan.m
 Rules:
 - Follow the repo conventions (CLAUDE.md, AGENTS.md, CONTRIBUTING, or similar). Use existing helpers and patterns.
 - Implement only the spec. Smallest complete change. No extra scope. No new dependencies.
-- Do not delete or weaken the test writer's tests. If a test is wrong, fix the test, and explain why in RUN_DIR/test-changes.md.
+- Do not delete or weaken the test writer's tests. They are frozen: if one is wrong, fix it and name the file with the reason in RUN_DIR/test-changes.md. The factory stops the run when a spec test changes without that.
 - Stay on the current branch. Never switch branches. Never push. Never touch the base branch.
 - Never write secrets or .env files.
 
 Do this:
+0. If RUN_DIR/verify-failed.md exists, you are the second try: the factory ran VERIFY_CMD on your commits and it failed. Fix that first, from the existing commits.
 1. Work test by test through tests.md: make each failing test pass (green), then refactor.
 2. Run VERIFY_CMD (from Context) until it is clean. If none is given, use the checks the repo documents. Run the full test suite once at the end.
 3. Commit in logical commits. Put the ticket ID in each commit message.

@@ -1,6 +1,6 @@
 ---
 name: test
-skills: tdd
+skills: tdd, pstack/principle-test-behavior-not-implementation
 ---
 # Agent: test writer
 

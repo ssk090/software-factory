@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: shellcheck
         run: |
-          shellcheck -S warning -x factory.sh docker-entrypoint.sh integrations/cursor-cloud.sh display/*.sh sandbox/*.sh tracker/*.sh
+          shellcheck -S warning -x factory.sh cell.sh docker-entrypoint.sh display/*.sh sandbox/*.sh tracker/*.sh
           shellcheck -S warning -e SC2034 -x tests/*.sh   # test checks read variables inside eval strings
       - name: unit tests
         run: python3 -m unittest -v test_router
@@ -24,8 +24,12 @@ jobs:
         run: tests/e2e.sh none headless fail
       - name: e2e, coder deletes spec tests
         run: tests/e2e.sh none headless deltests
-      - name: cursor cloud handoff
-        run: bash tests/cloud.sh
+      - name: e2e, coder edits a frozen spec test
+        run: tests/e2e.sh none headless edittests
+      - name: e2e, verify gate catches the coder
+        run: tests/e2e.sh none headless verify
+      - name: e2e, two tickets in parallel worktrees
+        run: tests/e2e.sh none headless parallel
 
   docker:
     runs-on: ubuntu-latest
@@ -37,3 +41,5 @@ jobs:
         run: git config --global user.name ci && git config --global user.email ci@localhost && git config --global init.defaultBranch main
       - name: e2e in the docker sandbox
         run: tests/e2e.sh docker headless pass
+      - name: e2e in the docker sandbox, two tickets in parallel
+        run: tests/e2e.sh docker headless parallel

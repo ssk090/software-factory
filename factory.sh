@@ -18,6 +18,8 @@ set -a; [ -f "$CONFIG" ] && . "$CONFIG"; set +a
 : "${S_WORKING:=in progress}" "${S_IN_REVIEW:=in review}" "${S_BLOCKED:=blocked}"
 : "${SPEC_GATE:=1}" "${MAX_REVIEW_ROUNDS:=2}" "${MAX_PER_RUN:=1}" "${AGENT_TIMEOUT:=3600}"
 : "${GC_DAYS:=14}"                               # ff gc: worktrees and logs idle this many days are removed
+: "${MAX_PARALLEL:=1}"                           # the daemon runs this many tickets at once, each in its own worktree
+: "${CACHE_VOLUME:=factory-cache}"               # docker sandbox: package download cache shared by all worktrees (empty = off)
 : "${TRACKER:=clickup}" "${SANDBOX:=docker}" "${DISPLAY_UI:=auto}"
 : "${AUTH_HOME:=$HOME}"; export AUTH_HOME   # where agent CLI login files live
 : "${PR_LABEL:=}"                                # label put on every PR the factory opens
@@ -68,8 +70,8 @@ case "$TRACKER" in */*) . "$TRACKER" ;; *) . "$HERE/tracker/$TRACKER.sh" ;; esac
 . "$HERE/sandbox/$SANDBOX.sh"
 # shellcheck source=/dev/null
 . "$HERE/display/$DISPLAY_UI.sh"
-# shellcheck source=/dev/null
-. "$HERE/integrations/cursor-cloud.sh"
+# shellcheck source=cell.sh
+. "$HERE/cell.sh"
 
 # live event stream read by factory-view.py
 ev() { # event [lane] [round] [msg]
@@ -97,7 +99,7 @@ step() {
   ( umask 077
     { printf 'rm -f -- "$0"   # holds API keys: gone once bash has it open\n'
       printf 'export PROMPT="$(cat %q)"\n' "$script.prompt"
-      for e in ${AGENT_ENV:-}; do [ -n "${!e:-}" ] && printf 'export %s=%q\n' "$e" "${!e}"; done
+      for e in ${AGENT_ENV:-} ${CELL_ENV:-}; do [ -n "${!e:-}" ] && printf 'export %s=%q\n' "$e" "${!e}"; done
       sandbox_cmd "$name" "$cwd" "$cmd"
     } >"$script" )
   display_run "$title" "$script" "$out"; rc=$?
@@ -106,19 +108,29 @@ step() {
 }
 
 # skill_dir <name>: the skill's folder or file. The ticket's repo first, then SKILLS_PATH.
+# <set>/<name> (e.g. pstack/tdd) picks the skill from one vendored set on SKILLS_PATH only.
 skill_dir() {
-  local d f dirs
-  for d in $REPO_SKILL_DIRS; do
-    [ -f "$WT/$d/$1/SKILL.md" ] && { echo "$WT/$d/$1"; return 0; }
-    [ -f "$WT/$d/$1.md" ] && { echo "$WT/$d/$1.md"; return 0; }
-  done
+  local d f dirs set=${1%/*} base=${1##*/}
+  if [ "$set" = "$1" ]; then
+    for d in $REPO_SKILL_DIRS; do
+      [ -f "$WT/$d/$1/SKILL.md" ] && { echo "$WT/$d/$1"; return 0; }
+      [ -f "$WT/$d/$1.md" ] && { echo "$WT/$d/$1.md"; return 0; }
+    done
+  fi
   IFS=: read -ra dirs <<<"$SKILLS_PATH"
   for d in "${dirs[@]}"; do
-    f=$(find -L "$d" -maxdepth 6 -path "*/$1/SKILL.md" 2>/dev/null | head -1)
+    if [ "$set" = "$1" ]; then
+      f=$(find -L "$d" -maxdepth 6 -path "*/$1/SKILL.md" 2>/dev/null | sort | head -1)
+    else
+      f=$(find -L "$d" -maxdepth 6 \( -path "*/$set/$base/SKILL.md" -o -path "*/$set/*/$base/SKILL.md" \) 2>/dev/null | sort | head -1)
+    fi
     [ -n "$f" ] && { dirname "$f"; return 0; }
   done
   return 1
 }
+
+# A skill name comes from the ticket text too, and becomes a path: allow only name or set/name.
+skill_name_ok() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]] && [[ $1 != *..* ]]; }
 
 # agent_skills <name>: skills named in the agent file's header plus the ticket's "Skills:" line
 agent_skills() {
@@ -132,8 +144,9 @@ agent_skills() {
 skills_prompt() {
   local s dir list=""
   for s in $(agent_skills "$1"); do
+    skill_name_ok "$s" || { log "$CID skill name '$s' is not a plain name, skipped" >&2; continue; }
     dir=$(skill_dir "$s") || { log "$CID skill $s not found on SKILLS_PATH, skipped" >&2; continue; }
-    mkdir -p "$RUN/skills"; rm -rf "${RUN:?}/skills/$s"
+    mkdir -p "$(dirname "$RUN/skills/$s")"; rm -rf "${RUN:?}/skills/$s"
     if [ -f "$dir" ]; then mkdir "$RUN/skills/$s" && cp "$dir" "$RUN/skills/$s/SKILL.md"; else cp -RL "$dir" "$RUN/skills/$s"; fi
     echo "$1: $s <- ${dir#"$WT/"}" >>"$RUN/skills.log"   # which copy each agent got (repo paths are relative)
     list="$list $RUN/skills/$s/SKILL.md"
@@ -141,7 +154,7 @@ skills_prompt() {
   [ -n "$list" ] || return 0
   printf '\nSkills: before you start, read and follow these skill files. Paths inside a skill are relative to its folder:%s\n' "$list"
   # Skills are written for interactive sessions; this maps their steps onto a headless factory run.
-  printf '%s\n' "If a skill expects a PR number or \$ARGUMENTS, use PR from the Context line. If gh is not available, git diff BASE...HEAD shows the same change. When a skill says to use or publish to the issue tracker, ask the user, grill, or run a setup skill: do not. The ticket is RUN_DIR/ticket.md, the spec is RUN_DIR/spec.md, and you write only the files your agent instructions name. When a skill says to call another skill, read RUN_DIR/skills/<name>/SKILL.md if it is there, otherwise skip it."
+  printf '%s\n' "If a skill expects a PR number or \$ARGUMENTS, use PR from the Context line. If gh is not available, git diff BASE...HEAD shows the same change. When a skill says to use or publish to the issue tracker, ask the user, grill, or run a setup skill: do not. The ticket is RUN_DIR/ticket.md, the spec is RUN_DIR/spec.md, and you write only the files your agent instructions name. When a skill says to call, run or apply another skill, read RUN_DIR/skills/<name>/SKILL.md or RUN_DIR/skills/pstack/<name>/SKILL.md (principle skills are named principle-<name>) if it is there, otherwise skip it."
 }
 
 # agent <name> <cwd> [round]: run agents/<name>.md. router.py picks the CLI and model. If that
@@ -153,6 +166,8 @@ agent() {
   # or the agent CLI reads it as an option.
   PROMPT="$(awk 'NR==1 && $0=="---" {h=1; next} h && $0=="---" {h=0; next} !h' "$HERE/agents/$name.md")
 $(skills_prompt "$name")
+
+Isolation: you are one of several agents working on different tickets at the same time, each in its own git worktree. Work only in your cwd (this ticket's worktree on branch $BR) and RUN_DIR. Do not read or change other worktrees. Do not use git stash (one stash is shared by every worktree), and do not create, switch, move or delete branches or tags: a git hook refuses it. A server or container you start must use ports PORT_BASE to PORT_BASE+$((CELL_PORT_SPAN - 1)) (PORT_BASE=${PORT_BASE:-}, PORT is set to it) and the compose project in COMPOSE_PROJECT_NAME, and you must stop it before you finish.
 
 Context: RUN_DIR=$RUN TICKET=$CID BASE=origin/$BASE ROUND=$round PR=${PR:-none yet} VERIFY_CMD=${VERIFY_CMD:-<none, use the repo documented checks>}. Do your job now."
   for try in 1 2; do
@@ -198,15 +213,31 @@ judge() {
 # What ran, what did not, and what changed, for the person who started the run.
 summary() { python3 "$HERE/observe/summary.py" "$CID" "$STATE/events.jsonl" "$RUN" "$WT" "$BASE" "$HERE/agents"; }
 
-worktree_new() { # withsetup(1/0)
-  git -C "$REPO" fetch -q origin "$BASE" || return 1
+# worktree_new: a fresh worktree for the ticket's branch, cut from the latest origin/BASE.
+# Run under the repo lock (it changes the shared .git).
+worktree_new() {
+  # An agent's own git fetch in another worktree can hold refs/remotes for a moment: retry.
+  local i; for i in 1 2 3; do git -C "$REPO" fetch -q origin "$BASE" && break; [ $i = 3 ] && return 1; sleep 2; done
   git -C "$REPO" worktree remove --force "$WT" 2>/dev/null; rm -rf "$WT"; git -C "$REPO" worktree prune
   # an old feature/<ticket> branch blocks feature/<ticket>/<desc> (git refs are paths)
   [ "$BR" != "feature/$CID" ] && git -C "$REPO" branch -q -D "feature/$CID" 2>/dev/null
-  git -C "$REPO" worktree add -q --no-track -B "$BR" "$WT" "origin/$BASE" || return 1
-  # setup runs in the sandbox too, so installed dependencies match the agents' OS
-  [ "$1" = 1 ] && [ -n "$SETUP_CMD" ] && { AGENT_AUTH= AGENT_ENV= PROMPT= step "factory-$CID-setup" setup "$WT" "$SETUP_CMD" "$RUN/setup.log" || return 1; }
-  return 0
+  git -C "$REPO" worktree add -q --no-track -B "$BR" "$WT" "origin/$BASE"
+}
+
+# worktree_attach: check out the ticket's existing branch again (its worktree folder was removed
+# by ff gc). Run under the repo lock.
+worktree_attach() { git -C "$REPO" worktree prune; rm -rf "$WT"; git -C "$REPO" worktree add -q "$WT" "$BR"; }
+
+# branch_elsewhere: the folder where BR is checked out, if that is not this ticket's worktree.
+# Two worktrees on one branch would mix two runs' commits, so the run stops instead.
+branch_elsewhere() {
+  local w here; here=$(cd "$WT" 2>/dev/null && pwd -P)
+  # worktrees on BR whose folder still exists (git marks a deleted one "prunable")
+  git -C "$REPO" worktree list --porcelain | awk -v br="branch refs/heads/$BR" 'BEGIN {RS = ""} {
+      w = ""; on = 0; gone = 0; n = split($0, l, "\n")
+      for (i = 1; i <= n; i++) { if (l[i] ~ /^worktree /) w = substr(l[i], 10); if (l[i] == br) on = 1; if (l[i] ~ /^prunable/) gone = 1 }
+      if (on && !gone) print w }' |
+    while IFS= read -r w; do [ "$(cd "$w" 2>/dev/null && pwd -P)" = "$here" ] || { echo "$w"; break; }; done
 }
 
 # Durable runs: each finished step is written to the ticket's journal. `ff run` skips journaled
@@ -216,13 +247,14 @@ mark() { echo "$1" >>"$RUN/journal"; }
 
 # The ticket's worktree: kept when resuming, rebuilt from the base branch on a fresh run.
 worktree_ready() { # withsetup(1/0)
+  local other; other=$(branch_elsewhere)
+  [ -z "$other" ] || { log "$CID branch $BR is checked out in $other: remove that worktree first"; return 1; }
   if [ -s "$RUN/journal" ] && [ "$(git -C "$WT" branch --show-current 2>/dev/null)" = "$BR" ]; then
     :   # resume: keep the checkout and its unpushed commits
   elif [ -s "$RUN/journal" ] && git -C "$REPO" show-ref -q "refs/heads/$BR"; then
-    git -C "$REPO" worktree prune; rm -rf "$WT"
-    git -C "$REPO" worktree add -q "$WT" "$BR" || return 1
+    repo_locked worktree_attach || return 1
   else
-    worktree_new 0 || return 1
+    repo_locked worktree_new || return 1
   fi
   if [ "$1" = 1 ] && ! done_step setup && [ -n "$SETUP_CMD" ]; then
     AGENT_AUTH= AGENT_ENV= PROMPT= step "factory-$CID-setup" setup "$WT" "$SETUP_CMD" "$RUN/setup.log" || return 1
@@ -241,14 +273,53 @@ stop_steps() {
 }
 
 on_branch() { [ "$(git -C "$WT" branch --show-current)" = "$BR" ] || { fail "$ID" "$1 left branch $BR"; return 2; }; }
-# The test writer's tests must still exist after the coder and the fixer (spec-driven guard).
-tests_kept() {
-  local f gone=""
-  while IFS= read -r f; do [ -z "$f" ] || [ -e "$WT/$f" ] || gone="$gone $f"; done <"$RUN/test-files.txt"
-  [ -z "$gone" ] || { fail "$ID" "$1 deleted tests written from the spec:$gone"; return 2; }
+
+# Agents that only read (spec writer, planner, reviewer) must not commit: HEAD stays where it was.
+read_only() { # label head-before
+  [ "$(git -C "$WT" rev-parse HEAD)" = "$2" ] || { fail "$ID" "$1 committed to $BR, but it may only read"; return 2; }
 }
 
-push() { git -C "$WT" push -q -u origin "HEAD:refs/heads/$BR" || { fail "$ID" "push rejected (branch exists?)"; return 2; }; }
+# Spec tests are frozen once the test writer commits them: their hashes go to test-files.sha256.
+freeze_tests() {
+  local f
+  git -C "$WT" diff --name-only --diff-filter=d "origin/$BASE...HEAD" >"$RUN/test-files.txt"   # the tests the coder must keep
+  while IFS= read -r f; do [ -n "$f" ] && printf '%s %s\n' "$(git -C "$WT" hash-object "$f")" "$f"; done \
+    <"$RUN/test-files.txt" >"$RUN/test-files.sha256"
+}
+# The frozen tests must still exist after the coder and the fixer, and a changed one must be
+# named, with the reason, in RUN/test-changes.md (spec-driven guard).
+tests_kept() {
+  local f h gone="" changed=""
+  while IFS= read -r f; do [ -z "$f" ] || [ -e "$WT/$f" ] || gone="$gone $f"; done <"$RUN/test-files.txt"
+  [ -z "$gone" ] || { fail "$ID" "$1 deleted tests written from the spec:$gone"; return 2; }
+  [ -f "$RUN/test-files.sha256" ] || return 0   # runs started before tests were frozen
+  while read -r h f; do
+    [ "$(git -C "$WT" hash-object "$f")" = "$h" ] && continue
+    grep -qF "$f" "$RUN/test-changes.md" 2>/dev/null || changed="$changed $f"
+  done <"$RUN/test-files.sha256"
+  [ -z "$changed" ] || { fail "$ID" "$1 changed tests written from the spec without naming them in test-changes.md:$changed"; return 2; }
+}
+
+# verify <round>: the orchestrator runs VERIFY_CMD itself, in the ticket's sandbox, and does not
+# take an agent's word that it passed. Writes verify-<round>.log. Rounds: 1 = the base branch
+# before any change (baseline), 2 = after the coder, 3 = after the coder's retry, 3+N = after fix N.
+verify() {
+  [ -n "$VERIFY_CMD" ] || return 0
+  local rc
+  ev lane_start verify "$1" "factory:VERIFY_CMD"
+  AGENT_AUTH= AGENT_ENV= PROMPT= step "factory-$CID-verify-$1" "verify #$1" "$WT" "$VERIFY_CMD" "$RUN/verify-$1.log"; rc=$?
+  ev lane_end verify "$1" "$rc"
+  if [ $rc = 0 ] || ! verify_blocks; then rm -f "$RUN/verify-failed.md"; else
+    { printf 'The factory ran VERIFY_CMD (%s) on HEAD %s and it failed (exit %s). Last lines:\n\n```\n' \
+        "$VERIFY_CMD" "$(git -C "$WT" rev-parse --short HEAD)" "$rc"
+      tail -n 80 "$RUN/verify-$1.log"; printf '```\n'; } >"$RUN/verify-failed.md"
+  fi
+  return $rc
+}
+# The base branch already fails VERIFY_CMD: the gate only reports, it cannot block.
+verify_blocks() { [ ! -e "$RUN/verify-baseline-red" ]; }
+
+push() { repo_locked git -C "$WT" push -q -u origin "HEAD:refs/heads/$BR" || { fail "$ID" "push rejected (branch exists?)"; return 2; }; }
 
 stage_spec() {
   tracker_status "$ID" "$S_WORKING" || true
@@ -256,7 +327,9 @@ stage_spec() {
   worktree_ready 0 || return 1
   if ! done_step spec; then
     rm -f "$RUN/spec.md"
+    local head; head=$(git -C "$WT" rev-parse HEAD)
     agent spec "$WT" || return 1
+    read_only "spec writer" "$head" || return 2
     [ -s "$RUN/spec.md" ] || { fail "$ID" "spec writer wrote no spec.md"; return 2; }
     if [ "$(awk 'NF {l=$0} END {sub(/[ \t\r]+$/, "", l); print l}' "$RUN/spec.md")" = "STATUS: NEEDS_INPUT" ]; then
       { echo "Spec needs input before coding:"; echo; cat "$RUN/spec.md"; } | ticket_comment "$ID"
@@ -266,7 +339,9 @@ stage_spec() {
   fi
   if ! done_step plan; then
     rm -f "$RUN/plan.md"
+    local head; head=$(git -C "$WT" rev-parse HEAD)
     agent plan "$WT" || return 1
+    read_only planner "$head" || return 2
     [ -s "$RUN/plan.md" ] || { fail "$ID" "planner wrote no plan.md"; return 2; }
     mark plan
   fi
@@ -295,11 +370,17 @@ stage_build() {
   [ -s "$RUN/spec.md" ] && [ -s "$RUN/plan.md" ] || { fail "$ID" "no spec.md or plan.md in $RUN, run the spec stage first"; return 2; }
   worktree_ready 1 || { fail "$ID" "worktree or setup failed, see setup.log"; return 2; }
 
+  if ! done_step verify-base; then   # baseline: does the base branch pass VERIFY_CMD at all?
+    verify 1 || { touch "$RUN/verify-baseline-red"; rm -f "$RUN/verify-failed.md"
+      ev note "" 0 "the base branch already fails VERIFY_CMD: the verify gate only reports"
+      log "$CID origin/$BASE already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block"; }
+    mark verify-base
+  fi
   if ! done_step test; then
     agent test "$WT" || return 1
     [ -s "$RUN/tests.md" ] || { fail "$ID" "test writer wrote no tests.md"; return 2; }
     on_branch "test writer" || return 2
-    git -C "$WT" diff --name-only "origin/$BASE...HEAD" >"$RUN/test-files.txt"   # the tests the coder must keep
+    freeze_tests
     mark test
   fi
   if ! done_step code; then
@@ -310,6 +391,17 @@ stage_build() {
     tests_kept coder || return 2
     [ "$(git -C "$WT" rev-list --count "origin/$BASE..HEAD")" -gt 0 ] || { fail "$ID" "coder made no commits"; return 2; }
     mark code
+  fi
+  if ! done_step verify-code; then
+    # The coder gets one more fresh session with the failure (RUN/verify-failed.md), then the gate holds.
+    if ! verify 2 && verify_blocks; then
+      agent code "$WT" 2 || return 1
+      [ -s "$RUN/blocked.md" ] && { fail "$ID" "coder blocked: $(head -c 1500 "$RUN/blocked.md")"; return 2; }
+      on_branch coder || return 2
+      tests_kept coder || return 2
+      verify 3 || { fail "$ID" "VERIFY_CMD still fails after the coder's second try, see verify-3.log"; return 2; }
+    fi
+    mark verify-code
   fi
   if [ -f "$HERE/agents/docs.md" ] && ! done_step docs; then
     agent docs "$WT" || return 1
@@ -337,7 +429,9 @@ stage_build() {
   for r in $(seq 1 "$MAX_REVIEW_ROUNDS"); do
     if ! done_step "review-$r"; then
       rm -f "$RUN/review-$r.md"
+      local head; head=$(git -C "$WT" rev-parse HEAD)
       agent review "$WT" "$r" || return 1
+      read_only reviewer "$head" || return 2
       [ -s "$RUN/review-$r.md" ] || { fail "$ID" "reviewer wrote no review-$r.md"; return 2; }
       gh pr comment "$PR" -F "$RUN/review-$r.md" >/dev/null || true
       mark "review-$r"
@@ -350,6 +444,7 @@ stage_build() {
       agent fix "$WT" "$r" || return 1
       on_branch fixer || return 2
       tests_kept fixer || return 2
+      verify $((3 + r))   # a failure goes to the next reviewer as RUN/verify-failed.md
       push || return 2
       mark "fix-$r"
     fi
@@ -387,11 +482,14 @@ process_task() { # id status [fresh]
   # One run per ticket at a time.
   local lock="$STATE/lock-$CID"
   take_lock "$lock" || { log "$CID is already running (pid $(cat "$lock/pid")). Stop it first, or wait."; return 1; }
+  # The ticket's cell: a slot (its own port range) and the guard hook. See cell.sh.
+  take_slot || { rm -rf "$lock"; log "$CID: all $SLOTS cell slots are busy (SLOTS). Try again when a ticket ends."; return 1; }
+  cell_enter || { cell_leave; rm -rf "$lock"; log "$CID: could not write the ticket guard hook"; return 1; }
   # Ctrl-C (or a closed terminal): stop the agents, keep everything, leave the ticket as it is.
   trap 'log "$CID stopped. Run ff run $CID to continue where it stopped."; stop_steps
-        ev fail "" 0 "stopped by you (ff run $CID continues)"; ev ticket_end "" 0 130; rm -rf "'"$lock"'"; exit 130' INT TERM HUP
+        ev fail "" 0 "stopped by you (ff run $CID continues)"; ev ticket_end "" 0 130; cell_leave; rm -rf "'"$lock"'"; exit 130' INT TERM HUP
   run_ticket "$st" "${3:-}"; local rc=$?
-  trap - INT TERM HUP; rm -rf "$lock"
+  trap - INT TERM HUP; cell_leave; rm -rf "$lock"
   return $rc
 }
 
@@ -402,7 +500,8 @@ run_ticket() { # status fresh
   if [ "$2" = fresh ] || done_step finished; then
     rm -f "$RUN"/journal "$RUN"/spec.md "$RUN"/plan.md "$RUN"/tests.md "$RUN"/test-files.txt "$RUN"/test-changes.md \
           "$RUN"/blocked.md "$RUN"/docs.md "$RUN"/review-*.md "$RUN"/fix-notes.md "$RUN"/pr-url "$RUN"/pr-title.txt \
-          "$RUN"/pr-body.md "$RUN"/judge.json "$RUN"/judge.txt "$RUN"/build_family.txt
+          "$RUN"/pr-body.md "$RUN"/judge.json "$RUN"/judge.txt "$RUN"/build_family.txt "$RUN"/test-files.sha256 \
+          "$RUN"/verify-*.log "$RUN"/verify-failed.md "$RUN"/verify-baseline-red "$RUN"/guard.log
   fi
   if [ -s "$RUN/journal" ]; then
     ev ticket_resume "" 0 "$TITLE"; log "$CID continues after: $(tr '\n' ' ' <"$RUN/journal")"
@@ -430,6 +529,9 @@ run_ticket() { # status fresh
   display_ticket_end "$CID"
 }
 
+# poll [--now | --enqueue]: take assigned tickets from the tracker and run them one after the
+# other. --enqueue (the daemon) puts them in the queue instead, where the daemon runs up to
+# MAX_PARALLEL at once. A ticket that is failed, running or already queued is skipped.
 poll() {
   if [ "${AUTO_PICKUP:-0}" != 1 ] && [ "${1:-}" != --now ]; then
     log "auto pickup is off (AUTO_PICKUP=0). Use: ff poll --now, or ff run <ticket>"; return 0
@@ -444,29 +546,49 @@ poll() {
   while IFS=$'\t' read -r id st; do
     [ -n "$id" ] && [ ! -e "$STATE/failed/$id" ] || continue
     [ "$n" -ge "$MAX_PER_RUN" ] && break
-    process_task "$id" "$st"; n=$((n+1))
+    if [ "${1:-}" = --enqueue ]; then
+      grep -qsx -- "$id" "$STATE"/queue/* "$STATE"/queue/running/* && continue
+      echo "$id" >"$STATE/queue/$(date +%s)-$$-$n"; log "queued $id ($st)"
+    else
+      process_task "$id" "$st"
+    fi
+    n=$((n+1))
   done <<<"$tasks"
   [ "$n" = 0 ] && log "nothing to do"
   return 0
 }
 
+# queued: how many tickets wait in the queue (queue/running is a folder, not an entry)
+queued() { local f n=0; for f in "$STATE"/queue/*; do [ -f "$f" ] && n=$((n + 1)); done; echo "$n"; }
+
 # take_lock <dir>: a pid lock. A lock whose process is gone (or is this process: pids repeat
 # after a container restart) is stale and taken over. Fails if another live process holds it.
+# Parallel runs race for the same locks (cell slots), so a lock without a pid yet is being taken
+# (wait for its pid), and a stale lock is broken only while holding <dir>.break, after checking
+# again that it is stale: two processes can never both take it over.
+lock_pid() { local i p; for i in 1 2 3 4 5 6 7 8 9 10; do p=$(cat "$1/pid" 2>/dev/null); [ -n "$p" ] && break; [ -d "$1" ] || break; sleep 0.2; done; echo "$p"; }
+lock_live() { local p; p=$(lock_pid "$1"); [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null; }
 take_lock() {
-  local pid; pid=$(cat "$1/pid" 2>/dev/null)
-  if ! mkdir "$1" 2>/dev/null; then
-    [ -n "$pid" ] && [ "$pid" != $$ ] && kill -0 "$pid" 2>/dev/null && return 1
-    rm -rf "$1"; mkdir "$1" || return 1
+  local rc
+  mkdir "$1" 2>/dev/null && { echo $$ >"$1/pid"; return 0; }
+  lock_live "$1" && return 1
+  if ! mkdir "$1.break" 2>/dev/null; then   # another process is breaking it. A .break left by a crash expires after a minute
+    [ -n "$(find "$1.break" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rm -rf "$1.break"
+    return 1
   fi
-  echo $$ >"$1/pid"
+  if lock_live "$1"; then rc=1; else rm -rf "$1"; mkdir "$1" 2>/dev/null && echo $$ >"$1/pid"; rc=$?; fi
+  rmdir "$1.break"
+  return $rc
 }
 
 # Long-running mode for a server: run tickets dropped in the queue, and poll if AUTO_PICKUP=1.
-# One daemon per data folder. A queued ticket is claimed (moved to queue/running) and removed
-# when its run ends, so a restart in the middle runs it again, and the journal resumes it.
-# daemon --once: drain the queue one time and exit (cron, tests).
+# Up to MAX_PARALLEL tickets run at once, each its own `factory.sh run` process in its own
+# worktree and cell (cell.sh). One daemon per data folder. A queued ticket is claimed (moved to
+# queue/running) and removed when its run ends, so a restart in the middle runs it again, and
+# the journal resumes it.
+# daemon --once: run everything queued, wait for it to finish, and exit (cron, tests).
 daemon() {
-  local last=0 lastgc=0 f child="" lock="$STATE/daemon.lock"
+  local last=0 lastgc=0 f k still kids="" lock="$STATE/daemon.lock"
   take_lock "$lock" || { log "a daemon is already running (pid $(cat "$lock/pid"))"; return 1; }
   doctor || { rm -rf "$lock"; log "daemon not started: fix the FAIL lines above (ff doctor)"; return 1; }
   # Locks left by runs that died with the last daemon (a container restart): those runs are gone.
@@ -474,24 +596,33 @@ daemon() {
     { kill -0 "$(cat "$f/pid" 2>/dev/null)" 2>/dev/null && [ "$(cat "$f/pid")" != $$ ]; } || rm -rf "$f"; done
   mkdir -p "$STATE/queue/running"
   for f in "$STATE"/queue/running/*; do [ -f "$f" ] && mv "$f" "$STATE/queue/"; done
-  # docker stop: stop the ticket's run (it kills its agent containers), keep its claim for the restart.
-  trap 'log "daemon stopping"; [ -n "$child" ] && kill -TERM "$child" 2>/dev/null && wait "$child"
-        rm -rf "'"$lock"'"; exit 143' INT TERM
-  log "daemon up (queue every 10s, auto pickup: ${AUTO_PICKUP:-0}, daily gc of items idle ${GC_DAYS} days)"
+  # docker stop: stop the tickets' runs (they kill their agent containers), keep their claims for the restart.
+  # kids: "<pid>:<claim file name>" of every running ticket
+  trap 'log "daemon stopping"; for k in $kids; do kill -TERM "${k%%:*}" 2>/dev/null; done
+        for k in $kids; do wait "${k%%:*}"; done; rm -rf "'"$lock"'"; exit 143' INT TERM
+  log "daemon up (queue every 10s, up to $MAX_PARALLEL tickets at once, auto pickup: ${AUTO_PICKUP:-0}, daily gc of items idle ${GC_DAYS} days)"
   while :; do
+    still=""   # a finished run drops its claim
+    for k in $kids; do
+      if kill -0 "${k%%:*}" 2>/dev/null; then still="$still $k"; else wait "${k%%:*}"; rm -f "$STATE/queue/running/${k#*:}"; fi
+    done
+    kids=$still
     for f in "$STATE"/queue/*; do
+      [ "$(wc -w <<<"$kids")" -lt "$MAX_PARALLEL" ] || break
       [ -f "$f" ] && mv "$f" "$STATE/queue/running/" || continue
-      f="$STATE/queue/running/${f##*/}"
-      log "queue: $(cat "$f")"
-      "$HERE/factory.sh" run "$(cat "$f")" & child=$!; wait "$child"; child=""
-      rm -f "$f"
+      log "queue: $(cat "$STATE/queue/running/${f##*/}")"
+      "$HERE/factory.sh" run "$(cat "$STATE/queue/running/${f##*/}")" & kids="$kids $!:${f##*/}"
     done
     if [ "${AUTO_PICKUP:-0}" = 1 ] && [ $(( $(date +%s) - last )) -ge "${POLL_INTERVAL:-3600}" ]; then
-      "$HERE/factory.sh" poll & child=$!; wait "$child"; child=""; last=$(date +%s)
+      "$HERE/factory.sh" poll --enqueue; last=$(date +%s)
     fi
     if [ $(( $(date +%s) - lastgc )) -ge 86400 ]; then gc >/dev/null; lastgc=$(date +%s); fi
-    [ "${1:-}" = --once ] && break
-    sleep 10 & wait $!   # wait, not sleep: a TERM is handled at once
+    if [ "${1:-}" = --once ]; then
+      [ -z "$kids" ] && [ "$(queued)" = 0 ] && break
+      sleep 1 & wait $!
+    else
+      sleep 10 & wait $!   # wait, not sleep: a TERM is handled at once
+    fi
   done
   rm -rf "$lock"
 }
@@ -514,6 +645,11 @@ doctor() {
     git -C "$REPO" ls-remote -q --exit-code origin "refs/heads/$BASE" >/dev/null 2>&1 \
       && ok "origin has branch $BASE" || no "origin has no branch $BASE (BASE), or origin is unreachable"
   else no "REPO $REPO is not a git repository"; fi
+  # the ticket guard needs reference-transaction hooks and rev-parse --path-format (git 2.31)
+  git version | awk '{split($3, v, "."); exit !(v[1] > 2 || (v[1] == 2 && v[2] >= 31))}' \
+    && ok "$(git version) (ticket guard hooks)" || no "$(git version): the ticket guard needs git 2.31 or newer"
+  [ "$MAX_PARALLEL" -le "$SLOTS" ] && ok "up to $MAX_PARALLEL ticket(s) at once, $SLOTS cell slots" \
+    || no "MAX_PARALLEL=$MAX_PARALLEL is more than SLOTS=$SLOTS"
   gh auth status >/dev/null 2>&1 && ok "gh logged in" || no "gh not logged in (gh auth login, or GH_TOKEN)"
   tracker_whoami >/dev/null 2>&1 && ok "tracker $TRACKER reachable" || no "tracker $TRACKER: login or network failed (check its token in $CONFIG)"
   why=$(sandbox_check 2>&1) && ok "sandbox $SANDBOX" || no "sandbox $SANDBOX: $why"
@@ -528,23 +664,35 @@ doctor() {
   return $bad
 }
 
-# gc [days]: free disk. A worktree idle for N days (no run activity) is removed; its branch and
-# run folder stay, so ff run can rebuild it. Uncommitted changes in it are lost. Log lines of
+# gc [days]: free disk. A worktree is removed when its PR is merged or closed (a merged PR's
+# local branch goes too), or when it has been idle for N days (no run activity): then its branch
+# and run folder stay, so ff run can rebuild it. Uncommitted changes in it are lost. Log lines of
 # tickets idle for N days leave events.jsonl, and routing decisions older than N days leave
-# decisions.jsonl (the quota meter only needs 5 hours).
+# decisions.jsonl (the quota meter only needs 5 hours). Agents run with git's auto gc off, so
+# git gc --auto runs here, under the repo lock.
+worktree_drop() { git -C "$REPO" worktree remove --force "$1" 2>/dev/null; rm -rf "$1"; }
 gc() {
-  local days=${1:-$GC_DAYS} d cid n=0
+  local days=${1:-$GC_DAYS} d cid pr why n=0
   [[ $days =~ ^[0-9]+$ ]] || { echo "usage: ff gc [days]" >&2; return 1; }
   for d in "$TREES"/*/; do
     [ -d "$d" ] || continue; d=${d%/}; cid=$(basename "$d")
     kill -0 "$(cat "$STATE/lock-$cid/pid" 2>/dev/null)" 2>/dev/null && continue   # running now
-    [ -n "$(find "$RUNS/$cid" "$d" -maxdepth 1 -mtime "-$days" 2>/dev/null | head -1)" ] && continue
-    git -C "$REPO" worktree remove --force "$d" 2>/dev/null; rm -rf "$d"; n=$((n+1))
-    echo "removed worktree $cid"
+    pr=""; [ -s "$RUNS/$cid/pr-url" ] && pr=$(gh pr view "$(cat "$RUNS/$cid/pr-url")" --json state -q .state 2>/dev/null)
+    case "$pr" in
+      MERGED|CLOSED) why="PR $(lc "$pr")" ;;
+      *) [ -n "$(find "$RUNS/$cid" "$d" -maxdepth 1 -mtime "-$days" 2>/dev/null | head -1)" ] && continue
+         why="idle more than $days days" ;;
+    esac
+    repo_locked worktree_drop "$d"; n=$((n+1))
+    if [ "$pr" = MERGED ] && [ -s "$RUNS/$cid/branch" ]; then
+      repo_locked git -C "$REPO" branch -q -D "$(cat "$RUNS/$cid/branch")" 2>/dev/null && why="$why, local branch deleted"
+    fi
+    echo "removed worktree $cid ($why)"
   done
-  git -C "$REPO" worktree prune 2>/dev/null
+  repo_locked git -C "$REPO" worktree prune 2>/dev/null
+  repo_locked git -C "$REPO" gc --auto --quiet 2>/dev/null
   python3 "$HERE/observe/prune.py" "$days" "$STATE/events.jsonl" "$STATE/decisions.jsonl"
-  echo "gc: $n worktree(s) removed (idle more than $days days)"
+  echo "gc: $n worktree(s) removed"
 }
 
 # set_config KEY VALUE: write one setting into the config file (mode 600) and the environment.
@@ -624,7 +772,7 @@ case "${1:-}" in
   whoami)  tracker_whoami ;;
   view)    exec python3 "$HERE/factory-view.py" ;;
   login)   login "${2:-}" ;;
-  poll)    poll "${2:-}" ;;
+  poll)    poll "${2:-}" ;;   # --now: run them here, one by one. --enqueue: hand them to the daemon
   daemon)  daemon "${2:-}" ;;
   doctor)  doctor ;;
   health)  health ;;
@@ -662,10 +810,6 @@ case "${1:-}" in
            # manual run = full pipeline, no spec gate, whatever the ticket status
            tid=$(tracker_resolve "$2") && [ -n "$tid" ] && [ "$tid" != null ] || { echo "ticket not found: $2" >&2; exit 1; }
            SPEC_GATE=0; rm -f "$STATE/failed/$tid"; process_task "$tid" "$S_TODO" "$([ "${3:-}" = --fresh ] && echo fresh)" ;;
-  cloud)   # cloud <ticket> [--model ID] | cloud --models: hand code + self-review to a Cursor Cloud
-           # Agent, then open a draft PR. No --model in a terminal: pick from a list.
-           cloud_ticket "${2:?usage: ff cloud <ticket> [--model ID] | ff cloud --models}" "${@:3}" ;;
-  cloud-log) cloud_log "${2:?usage: ff cloud-log <ticket key>}" ;;   # follow the Cursor run live
   summary) # summary <ticket key>: the end-of-run report again
            CID=${2:?ticket key, e.g. CHP-1234}; RUN="$RUNS/$CID"; WT="$TREES/$CID"; summary ;;
   sync)    # sync <ticket key>: store the latest run in the database again
@@ -676,8 +820,15 @@ case "${1:-}" in
            CID=${2:?ticket key, e.g. CHP-1234}; RUN="$RUNS/$CID"
            if [ "${3:-}" = --send ]; then observe; else python3 "$HERE/observe/otlp.py" "$CID" "$STATE/events.jsonl" "$RUN" --summary; fi ;;
   retry)   rm -f "$STATE/failed/${2:?task id}"; echo "cleared" ;;
-  status)  echo "failed:"; ls "$STATE/failed"; echo "runs:"; ls -t "$RUNS" | head ;;
+  status)  echo "running (ticket, pid, cell slot, ports):"
+           for f in "$STATE"/lock-*; do
+             [ -d "$f" ] && kill -0 "$(cat "$f/pid" 2>/dev/null)" 2>/dev/null || continue
+             p=$(cat "$f/pid"); s=$(grep -lx "$p" "$STATE"/slot-*/pid 2>/dev/null | head -1 | sed -E 's|.*/slot-([0-9]+)/pid|\1|')
+             printf '  %-12s pid %-7s slot %-2s ports %s\n' "${f##*/lock-}" "$p" "${s:--}" "${s:+$((CELL_PORT_START + s * CELL_PORT_SPAN))-$((CELL_PORT_START + (s + 1) * CELL_PORT_SPAN - 1))}"
+           done
+           echo "queued: $(queued)"
+           echo "failed:"; ls "$STATE/failed"; echo "runs:"; ls -t "$RUNS" | head ;;
   schedule) schedule "${2:-3600}" ;;
   unschedule) launchctl unload "$HOME/Library/LaunchAgents/com.factory.poll.plist" && echo off ;;
-  *) echo "usage: ff whoami | login [KEY] | view | run <ticket> [--fresh] | cloud <ticket> [--model ID] | cloud --models | cloud-log <key> | route <ticket> [--set agent=cli:model] [--clear] | trace <key> [--send] | summary <key> | sync <key> | db up|down|status|ui|sql | poll [--now] | enqueue <ticket> | daemon [--once] | doctor | health | gc [days] | retry <id> | status | schedule [secs] | unschedule" ;;
+  *) echo "usage: ff whoami | login [KEY] | view | run <ticket> [--fresh] | route <ticket> [--set agent=cli:model] [--clear] | trace <key> [--send] | summary <key> | sync <key> | db up|down|status|ui|sql | poll [--now] | enqueue <ticket> | daemon [--once] | doctor | health | gc [days] | retry <id> | status | schedule [secs] | unschedule" ;;
 esac

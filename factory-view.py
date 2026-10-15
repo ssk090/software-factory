@@ -25,8 +25,8 @@ def tickets(events, now):
     for e in events:
         k = e["ticket"]
         if not k: continue
-        t = ts.setdefault(k, {"id": k, "title": "", "lanes": [], "pr": "", "end": None, "fail": "", "note": "", "cloud": "", "start": e["t"]})
-        if e["ev"] == "ticket_start": t.update(title=e["msg"], start=e["t"], lanes=[], end=None, fail="", pr="", note="", cloud="")
+        t = ts.setdefault(k, {"id": k, "title": "", "lanes": [], "pr": "", "end": None, "fail": "", "note": "", "start": e["t"]})
+        if e["ev"] == "ticket_start": t.update(title=e["msg"], start=e["t"], lanes=[], end=None, fail="", pr="", note="")
         elif e["ev"] == "ticket_resume":   # keep the finished steps; a step left open by a stopped run is over
             t.update(end=None, fail="", note="")
             for l in t["lanes"]:
@@ -39,7 +39,6 @@ def tickets(events, now):
             for l in reversed(t["lanes"]):
                 if l["name"] == "review": l["verdict"] = e["msg"]; break
         elif e["ev"] == "pr": t["pr"] = e["msg"]
-        elif e["ev"] == "cloud": t["cloud"] = e["msg"]   # Cursor Cloud agent page (ff cloud)
         elif e["ev"] == "note": t["note"] = e["msg"]
         elif e["ev"] == "fail": t["fail"] = e["msg"]
         elif e["ev"] == "ticket_end": t["end"] = e["t"]
@@ -63,29 +62,22 @@ def box(l, now, frame, live=True):
     name = l["name"] + (f"#{l['round']}" if l["name"] in ("review", "fix") else "")
     top = f"{col}{icon} {B}{name}{X}"
     sub = f"{D}{dur(d)}{X}" + (f" {col}{l['verdict']}{X}" if l["verdict"] else "")
-    cli, _, name = l["model"].rpartition(":")  # "<cli>:<model>", chosen by router.py or ff cloud
-    if cli == "cursor-cloud": cli = "☁ cursor"
+    cli, _, name = l["model"].rpartition(":")  # "<cli>:<model>", chosen by router.py
     model = f"{D}{(cli + ' ' if cli else '') + name.split('/')[-1]}"[:28] + X
     w = max(len(strip(top)), len(strip(sub)), len(strip(model))) + 2
     pad = lambda s: " " + s + " " * (w - 1 - len(strip(s)))
     return [col + "┌" + "─" * w + "┐" + X, col + "│" + X + pad(top) + col + "│" + X, col + "│" + X + pad(sub) + col + "│" + X, col + "│" + X + pad(model) + col + "│" + X, col + "└" + "─" * w + "┘" + X]
 
 def start_run(text):
-    """'<ticket>' runs the full pipeline; 'cloud <ticket> [model]' hands the code step to Cursor Cloud."""
-    words = text.split()
-    if words[0] == "cloud" and len(words) > 1:
-        cmd = ["cloud", words[1]] + (["--model", words[2]] if len(words) > 2 else [])
-    else:
-        cmd = ["run", words[0]]
+    """'<ticket>' runs the full pipeline in the ticket's own worktree."""
+    cmd = ["run", text.split()[0]]
     log = open(os.path.join(DATA, "state", f"manual-{int(time.time())}.log"), "w")
     subprocess.Popen([os.path.join(HERE, "factory.sh")] + cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
 
 HITS = []   # (first line, last line + 1, first col, last col + 1, ticket, lane) of every box on screen
 
 def step_cmd(tid, l):
-    """What a click on a step shows: the live Cursor stream for a cloud step, else the step's log."""
-    if l["model"].startswith("cursor-cloud:"):
-        return f"{os.path.join(HERE, 'factory.sh')} cloud-log {tid}"
+    """What a click on a step shows: the step's log."""
     log = os.path.join(DATA, "runs", tid, f"{l['name']}-{l['round'] or 1}.log")
     return f"tail -n 300 -F {log!r}"
 
@@ -118,7 +110,7 @@ def render(now, frame, width):
     polls = [e["t"] for e in ev if e["ev"] == "poll"]
     out = [f"{B}SOFTWARE FACTORY{X}  {D}{time.strftime('%H:%M:%S', time.localtime(now))}  last poll: {time.strftime('%H:%M:%S', time.localtime(polls[-1])) if polls else 'never'}{X}", "",
            f"  {B}orchestrator{X} {D}(never writes code){X}", f"  {D}│{X}"]
-    if not ts: out += ["  └ no runs yet. Type a ticket below, or run: ff run <ticket> | ff cloud <ticket>"]
+    if not ts: out += ["  └ no runs yet. Type a ticket below, or run: ff run <ticket>"]
     for t in ts:
         live = alive(t["id"])
         running = t["end"] is None and not t["fail"] and live
@@ -142,7 +134,6 @@ def render(now, frame, width):
             top = len(out)
             for x0, x1, tid, l in spots: HITS.append((top, top + 5, x0, x1, tid, l))
             for k in range(5): out.append("  │    " + "".join(cur[k]))
-        if t["cloud"]: out.append(f"  │    ☁ Cursor agent {t['cloud']}")
         if t["pr"]: out.append(f"  │    {G}PR{X} {t['pr']}")
         if t["note"] and running is False and not t["fail"]: out.append(f"  │    {Y}{t['note']}{X}")
         if t["fail"]: out.append(f"  │    {R}{t['fail'][:width-10]}{X}")
@@ -159,7 +150,7 @@ if __name__ == "__main__":
             w, h = shutil.get_terminal_size()
             lines = render(time.time(), frame, w)[: h - 3]
             input_line = f"{B}ticket >{X} {buf}█"
-            sys.stdout.write("\033[H\033[2J" + "\n".join(lines) + f"\033[{h-1};1H{D}{msg}{X}\033[{h};1H{input_line}  {D}(click a step = open it on the right, enter = run, cloud <ticket> [model] = Cursor Cloud, esc = quit){X}"); sys.stdout.flush(); frame += 1
+            sys.stdout.write("\033[H\033[2J" + "\n".join(lines) + f"\033[{h-1};1H{D}{msg}{X}\033[{h};1H{input_line}  {D}(click a step = open it on the right, enter = run, esc = quit){X}"); sys.stdout.flush(); frame += 1
             if select.select([sys.stdin], [], [], 0.4)[0]:
                 data = os.read(fd, 4096).decode(errors="ignore")
                 while data:

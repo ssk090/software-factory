@@ -1,8 +1,8 @@
 {
-  "_help": "clis: how to run each agent CLI. {model} is replaced. auth = login files under AUTH_HOME (mounted into the sandbox). env = API keys or tokens that also count as a login (set them with ff login). check = command that exits 0 when logged in. quota = which subscription gate applies. lanes: one ordered chain per agent (agents/<name>.md), or an alias to another agent's chain. Chains are ordered '<cli>:<model>' chains, cheapest or preferred first. gates: quota limits in percent.",
+  "_help": "clis: how to run each agent CLI. {model} is replaced. Every command must start a new session and keep none (codex --ephemeral, claude --no-session-persistence, pi --no-session): agents of different tickets never share a session. auth = login files under AUTH_HOME (mounted into the sandbox). env = API keys or tokens that also count as a login (set them with ff login). check = command that exits 0 when logged in. quota = which subscription gate applies. lanes: one ordered chain per agent (agents/<name>.md), or an alias to another agent's chain. Chains are ordered '<cli>:<model>' chains, cheapest or preferred first. gates: quota limits in percent.",
   "clis": {
     "codex": {
-      "command": "codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model {model}",
+      "command": "codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model {model}",
       "auth": [
         ".codex/auth.json"
       ],
@@ -13,7 +13,7 @@
       "quota": "codex"
     },
     "claude": {
-      "command": "claude -p --dangerously-skip-permissions --model {model}",
+      "command": "claude -p --no-session-persistence --dangerously-skip-permissions --model {model}",
       "auth": [
         ".claude/.credentials.json"
       ],

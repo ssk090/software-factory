@@ -5,6 +5,10 @@
 #   sandbox_cmd <name> <cwd> <cmd> print a bash script that runs <cmd> in <cwd> within
 #                                  $AGENT_TIMEOUT and exits with its exit code. $PROMPT is set.
 #                                  $AGENT_AUTH / $AGENT_ENV list the agent's login files and keys.
+#                                  $CELL_ENV lists the ticket cell's variables (cell.sh): pass them in.
+# Without a container an agent can read other tickets' worktrees. The ticket guard hook still
+# stops it from changing their branches, and each session keeps nothing, but use docker for
+# untrusted tickets.
 sandbox_check() { :; }
 
 sandbox_cmd() {
