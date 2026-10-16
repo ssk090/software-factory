@@ -32,6 +32,8 @@ export type Config = {
 	readonly agentTimeoutMs: number;
 	readonly prLabel: string;
 	readonly trackerComments: boolean;
+	/** Attach the spec and plan to the ticket as .md files (default on). */
+	readonly trackerAttach: boolean;
 	readonly branchType: string;
 	readonly skillsPath: readonly string[];
 	readonly repoSkillDirs: readonly string[];
@@ -47,6 +49,8 @@ export type Config = {
 		readonly listId: string;
 		readonly sprintListId: string;
 		readonly sprintFolderId: string;
+		/** The custom task id prefix (CHP): a bare number such as 7642 means CHP-7642. */
+		readonly idPrefix: string;
 		/** Where tickets made from Sentry issues go. */
 		readonly sentryListId: string;
 	};
@@ -69,6 +73,12 @@ export type Config = {
 	};
 	readonly autoPickup: boolean;
 	readonly pollSeconds: number;
+	/** Model API use: per provider (one API key each), requests and tokens per minute; spend per day. 0 = no limit. */
+	readonly limits: {
+		readonly rpm: number;
+		readonly tpm: number;
+		readonly dailyBudgetUsd: number;
+	};
 };
 
 const num = (value: string | undefined, fallback: number, name: string): number => {
@@ -94,6 +104,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		listId: env.CLICKUP_LIST_ID ?? "",
 		sprintListId: env.CLICKUP_SPRINT_LIST_ID ?? "",
 		sprintFolderId: env.CLICKUP_SPRINT_FOLDER_ID ?? "",
+		idPrefix: (env.CLICKUP_ID_PREFIX ?? "").trim().replace(/-$/, "").toUpperCase(),
 		sentryListId: env.SENTRY_CLICKUP_LIST_ID || env.CLICKUP_LIST_ID || "",
 	};
 	return {
@@ -123,6 +134,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		agentTimeoutMs: num(env.AGENT_TIMEOUT, 3600, "AGENT_TIMEOUT") * 1000,
 		prLabel: env.PR_LABEL ?? "",
 		trackerComments: flag(env.TRACKER_COMMENTS, false),
+		trackerAttach: flag(env.TRACKER_ATTACH, true),
 		branchType: env.BRANCH_TYPE ?? "",
 		skillsPath: list(
 			env.SKILLS_PATH ||
@@ -159,5 +171,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		},
 		autoPickup: flag(env.AUTO_PICKUP, false),
 		pollSeconds: Math.max(60, num(env.POLL_INTERVAL, 3600, "POLL_INTERVAL")),
+		limits: {
+			rpm: num(env.RATE_LIMIT_RPM, 50, "RATE_LIMIT_RPM"),
+			tpm: num(env.RATE_LIMIT_TPM, 0, "RATE_LIMIT_TPM"),
+			dailyBudgetUsd: num(env.DAILY_BUDGET_USD, 0, "DAILY_BUDGET_USD"),
+		},
 	};
 }

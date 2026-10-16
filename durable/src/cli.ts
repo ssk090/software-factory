@@ -15,6 +15,7 @@ import { Factory, type HostDeps } from "./host.ts";
 import { requestJson } from "./http.ts";
 import { chain, family, loadLanes, modelName, pickModel } from "./lanes.ts";
 import { SentryClient } from "./sentry.ts";
+import { type ThrottleStatus, usd } from "./throttle.ts";
 import { startServer } from "./server.ts";
 import { ClickUp } from "./tracker.ts";
 
@@ -26,8 +27,12 @@ const USAGE = `usage: ff <command>
   approve <ticket> [note]    approve a spec; the note goes to the coder
   steer <ticket> <message>   a message into the ticket's running agent step
   stop <ticket>              stop a ticket's pipeline (worktree and branch stay)
+  pause <ticket>             pause a running ticket: it holds before its next phase and model request
+  resume <ticket>            continue a paused ticket where it held
   status                     every ticket and what it is doing
   show <ticket>              one ticket: steps, files, PR
+  logs <ticket>              everything that happened to a ticket, oldest first
+  usage                      today's model spend and the rate limits
   sentry [sync]              production issues, by Fix first (sync: ask Sentry now)
   fix <sentry issue id>      make a ticket from a Sentry issue and plan its spec
   sprint                     your tasks in the current ClickUp sprint
@@ -87,7 +92,8 @@ async function call<T>(config: Config, path: string, body?: unknown): Promise<T>
 
 const line = (t: Ticket) => {
 	const step = t.steps.findLast((s) => s.status === "running");
-	return `${t.cid.padEnd(12)} ${t.state.padEnd(17)} ${t.phase.padEnd(12)} ${(step?.name ?? "").padEnd(16)} ${t.pr ?? ""}${t.blocked ? `  ${t.blocked}` : ""}`;
+	const state = t.paused ? "paused" : t.state;
+	return `${t.cid.padEnd(12)} ${state.padEnd(17)} ${t.phase.padEnd(12)} ${(step?.name ?? "").padEnd(16)} ${t.pr ?? ""}${t.blocked ? `  ${t.blocked}` : ""}`;
 };
 
 async function serve(config: Config) {
@@ -225,6 +231,8 @@ async function doctor(config: Config) {
 			: no(`origin has no branch ${config.base} (BASE), or origin is unreachable`);
 	} else no(`REPO ${config.repo} is not a git repository`);
 	const v = (await run("git", ["version"])).stdout.match(/(\d+)\.(\d+)/);
+	const shadows = (await git(config.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/origin/")).stdout.trim();
+	if (shadows) warn(`local branches named like remote ones (${shadows.split("\n").join(", ")}): they make origin/<branch> ambiguous; delete them once merged (git branch -d <name>)`);
 	v && (Number(v[1]) > 2 || (Number(v[1]) === 2 && Number(v[2]) >= 31)) ? ok(`git ${v[0]} (ticket guard hooks)`) : no("the ticket guard needs git 2.31 or newer");
 	(await run("gh", ["auth", "status"])).code === 0 ? ok("gh logged in") : no("gh not logged in (gh auth login, or GH_TOKEN)");
 	try {
@@ -267,6 +275,9 @@ async function doctor(config: Config) {
 		if (other === null) warn(`${role}: only ${modelName(model)} has a login, the coder's own family (${coder}): set another provider's key so code is reviewed by another family`);
 		else ok(`${role}: ${modelName(other)}`);
 	}
+	const { rpm, tpm, dailyBudgetUsd } = config.limits;
+	const limits = `model limits per provider: ${rpm || "no"} requests/min, ${tpm || "no"} tokens/min; daily budget ${dailyBudgetUsd > 0 ? usd(dailyBudgetUsd) : "none"}`;
+	dailyBudgetUsd > 0 ? ok(limits) : warn(`${limits} (set DAILY_BUDGET_USD to cap spend)`);
 	if (config.dash.host !== "127.0.0.1" && config.dash.host !== "localhost" && !config.dash.password) no(`DASH_HOST=${config.dash.host} needs DASH_PASSWORD`);
 	const file = process.env.FACTORY_CONFIG || join(config.here, "config.env");
 	const mode = await stat(file).then((s) => s.mode & 0o077, () => 0);
@@ -300,6 +311,30 @@ async function main() {
 			const ref = ticketArg(args);
 			await call(config, `/api/tickets/${encodeURIComponent(ref)}/stop`, {});
 			return console.log(`stopping ${ref}`);
+		}
+		case "pause":
+		case "resume": {
+			const ref = ticketArg(args);
+			const t = await call<Ticket>(config, `/api/tickets/${encodeURIComponent(ref)}/${command}`, {});
+			return console.log(command === "pause" ? `paused ${t.cid}: ff resume ${t.cid} continues it` : `${t.cid} continues`);
+		}
+		case "logs": {
+			const ref = ticketArg(args);
+			const data = await readOnly(config, () => call<{ ticket: Ticket }>(config, `/api/tickets/${encodeURIComponent(ref)}`), async (f) => ({ ticket: (await f.ticket(ref)) ?? fail(`unknown ticket ${ref}`) }));
+			for (const e of data.ticket.events ?? []) {
+				const when = new Date(e.at).toISOString().replace("T", " ").slice(0, 19);
+				console.log(`${when}  ${e.level.padEnd(5)} ${e.kind.padEnd(8)} ${(e.step ?? e.phase).padEnd(14)} ${e.text}`);
+			}
+			return;
+		}
+		case "usage": {
+			const u = (await call<{ usage: ThrottleStatus }>(config, "/api/overview")).usage;
+			const budget = u.limits.dailyBudgetUsd > 0 ? ` of ${usd(u.limits.dailyBudgetUsd)}${u.budgetReached ? " (reached: tickets are paused)" : ""}` : " (no daily budget)";
+			console.log(`today ${u.today.day}: ${usd(u.today.total.cost)}${budget}, ${u.today.total.requests} requests, ${u.today.total.tokens} tokens`);
+			for (const [p, x] of Object.entries(u.today.providers)) console.log(`  ${p.padEnd(12)} ${usd(x.cost).padStart(8)} ${String(x.requests).padStart(6)} requests ${String(x.tokens).padStart(10)} tokens`);
+			console.log(`limits per provider: ${u.limits.rpm || "no"} requests/min, ${u.limits.tpm || "no"} tokens/min`);
+			for (const w of u.waiting) console.log(`  waiting: ${w.provider}: ${w.reason}`);
+			return;
 		}
 		case "status": {
 			const tickets = await readOnly(config, async () => (await call<{ tickets: Ticket[] }>(config, "/api/overview")).tickets, (f) => f.tickets());

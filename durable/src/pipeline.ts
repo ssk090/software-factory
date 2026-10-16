@@ -23,18 +23,21 @@ import {
 	defineExtension,
 	defineTask,
 	type ModelRef,
+	ProviderDoc,
 	type RunningTask,
 	type TaskRuntime,
 	type Tx,
+	UsageDoc,
 } from "@earendil-works/pi-durable";
 import type { Config } from "./config.ts";
-import { StepDoc, type StepRecord, type Ticket, TicketDoc, TicketIndex } from "./docs.ts";
+import { addEvent, type Revision, StepDoc, type StepRecord, type StepUsage, type Ticket, TicketDoc, type TicketEvent, TicketIndex } from "./docs.ts";
 import { type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
 import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, testsKept, writeGuardHooks } from "./git.ts";
 import type { GitHost } from "./github.ts";
 import { family, type Lanes, modelName, pickModel } from "./lanes.ts";
 import { buildPrompt, hasRole, STEP_EXTENSIONS } from "./roles.ts";
-import type { Tracker } from "./tracker.ts";
+import { steFaults, steRoles } from "./ste.ts";
+import { TicketGone, type Tracker } from "./tracker.ts";
 
 export type PipelineDeps = {
 	readonly config: Config;
@@ -83,6 +86,54 @@ export type Checkpoint = {
 	freshDone: boolean;
 };
 export type PipelineResult = { outcome: "in_review" | "draft" | "waiting" | "needs_input" | "blocked"; pr: string | null; reason: string | null };
+
+/** The phases in the order a run goes through them, with what each does (the dashboard's timeline). */
+export const PHASES: readonly { phase: Phase; label: string }[] = [
+	{ phase: "start", label: "Start" },
+	{ phase: "admit", label: "Wait for a free slot" },
+	{ phase: "fetch", label: "Fetch the ticket" },
+	{ phase: "worktree", label: "Prepare the worktree" },
+	{ phase: "spec", label: "Write the spec" },
+	{ phase: "plan", label: "Plan" },
+	{ phase: "post-spec", label: "Post the spec" },
+	{ phase: "gate", label: "Wait for your approval" },
+	{ phase: "setup", label: "Set up (SETUP_CMD)" },
+	{ phase: "verify-base", label: "Check the base branch" },
+	{ phase: "test", label: "Write failing tests" },
+	{ phase: "code", label: "Write the code" },
+	{ phase: "verify-code", label: "Verify the code" },
+	{ phase: "docs", label: "Docs" },
+	{ phase: "pr-summary", label: "PR summary" },
+	{ phase: "pr", label: "Open the PR" },
+	{ phase: "review", label: "Review" },
+	{ phase: "fix", label: "Fix review findings" },
+	{ phase: "pr-summary-2", label: "Update the PR summary" },
+	{ phase: "judge", label: "Judge" },
+	{ phase: "report", label: "Report" },
+];
+const label = (phase: string) => PHASES.find((p) => p.phase === phase)?.label ?? phase;
+
+/** "2m 05s" */
+export const duration = (ms: number) => {
+	const s = Math.max(0, Math.round(ms / 1000));
+	return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+};
+type UsageTotals = { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { total: number } };
+/** One step's model use (its conversation's pi.usage), summed over its models. */
+export function sumUsage(state: { models: Record<string, UsageTotals> } | undefined): StepUsage | null {
+	if (state === undefined) return null;
+	const out: StepUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 0, cost: 0 };
+	for (const u of Object.values(state.models)) {
+		out.input += u.input;
+		out.output += u.output;
+		out.cacheRead += u.cacheRead;
+		out.cacheWrite += u.cacheWrite;
+		out.tokens += u.totalTokens;
+		out.cost += u.cost.total;
+	}
+	return out;
+}
+const usageText = (u: StepUsage | null) => (u === null || u.tokens === 0 ? "" : ` · ${u.tokens >= 1000 ? `${(u.tokens / 1000).toFixed(1)}k` : u.tokens} tokens · $${u.cost.toFixed(2)}`);
 
 const initial = (): Checkpoint => ({
 	phase: "start",
@@ -156,6 +207,8 @@ export function createPipeline(deps: PipelineDeps) {
 				ticket.phase = checkpoint.phase;
 				// Where a later run continues if this one is stopped or blocked.
 				if (entering && !SETUP_PHASES.has(checkpoint.phase)) ticket.resume = { ...checkpoint, polls: 0 } as unknown as JsonObject;
+				const rounds = checkpoint.round > 1 && (checkpoint.phase === "review" || checkpoint.phase === "fix" || checkpoint.phase === "code");
+				if (entering) addEvent(ticket, { kind: "phase", text: `${label(checkpoint.phase)}${rounds ? ` (round ${checkpoint.round})` : ""}` });
 				edit?.(ticket);
 			});
 			return { status: "running", checkpoint };
@@ -168,7 +221,16 @@ export function createPipeline(deps: PipelineDeps) {
 			await editTicket(tx, task.input.ticketId, (ticket) => {
 				edit(ticket);
 				ticket.slot = null;
+				ticket.paused = null;
 				if (result.outcome === "in_review" || result.outcome === "draft") ticket.resume = null;
+				const ended: Record<PipelineResult["outcome"], Pick<TicketEvent, "level" | "text">> = {
+					in_review: { level: "info", text: `Done: PR ready for human review${result.pr ? ` (${result.pr})` : ""}` },
+					draft: { level: "warn", text: "Done: the PR stays a draft, review findings remain" },
+					waiting: { level: "info", text: "Waiting" },
+					needs_input: { level: "warn", text: "Stopped: the spec has open questions" },
+					blocked: { level: "error", text: `Blocked: ${result.reason ?? ""}` },
+				};
+				addEvent(ticket, { kind: "run", ...ended[result.outcome] });
 			});
 			return { status: "terminal", outcome: { status: "completed", result } };
 		}, context);
@@ -182,15 +244,40 @@ export function createPipeline(deps: PipelineDeps) {
 	const cell = (ticket: Ticket) =>
 		cellEnv({ cid: ticket.cid, slot: ticket.slot ?? 0, hooksDir: join(ticket.run!, "git-hooks"), portStart: config.cellPortStart, portSpan: config.cellPortSpan, identity: deps.identity });
 
+	/** Record an event on the ticket in a commit of its own (for effects outside the session). */
+	const note = (runtime: R, context: Context, ticketId: string, event: Pick<TicketEvent, "kind" | "text"> & Partial<TicketEvent>) =>
+		runtime.commit(async (tx) => {
+			await editTicket(tx, ticketId, (t) => addEvent(t, event));
+			return undefined;
+		}, context);
+	const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 	/** A comment on the ticket, at most once per key (memo first: a crash loses it, never doubles it). */
 	const commentOnce = async (runtime: R, context: Context, ticket: Ticket, key: string, text: string, always = false) => {
 		if (!(always || config.trackerComments)) return;
 		if ((await runtime.memo<boolean>(`comment:${key}`, context)) !== undefined) return;
 		await runtime.memo(`comment:${key}`, true, context);
-		await tracker.comment(ticket.id, text.slice(0, 30_000)).catch((error) => log(ticket, `comment failed: ${error instanceof Error ? error.message : error}`));
+		const failed = await tracker.comment(ticket.id, text.slice(0, 30_000)).then(() => null, (error: unknown) => message(error));
+		if (failed !== null) log(ticket, `comment failed: ${failed}`);
+		const first = text.split("\n")[0]!.slice(0, 120);
+		await note(runtime, context, ticket.id, failed === null ? { kind: "tracker", text: `Comment posted on the ticket: ${first}` } : { kind: "tracker", level: "warn", text: `Comment failed: ${failed}` });
 	};
-	const setStatus = (ticket: Ticket, status: string) =>
-		tracker.setStatus(ticket.id, status).catch((error) => log(ticket, `status ${status} failed: ${error instanceof Error ? error.message : error}`));
+	/** A run-folder file attached to the ticket as `<ticket>-<file>`, once per run (memo first, as comments). Best effort. */
+	const attachOnce = async (runtime: R, context: Context, ticket: Ticket, file: string, content: string, version = "") => {
+		if (!config.trackerAttach || content.trim() === "") return;
+		const key = `attach:${file}${version ? `:${version}` : ""}`;
+		if ((await runtime.memo<boolean>(key, context)) !== undefined) return;
+		await runtime.memo(key, true, context);
+		const name = `${ticket.cid}-${file}`;
+		const failed = await tracker.attach(ticket.id, name, content).then(() => null, (error: unknown) => message(error));
+		if (failed !== null) log(ticket, `attach ${name} failed: ${failed}`);
+		await note(runtime, context, ticket.id, failed === null ? { kind: "tracker", text: `Attached ${name} to the ticket` } : { kind: "tracker", level: "warn", text: `Attaching ${name} failed: ${failed}` });
+	};
+	const setStatus = async (runtime: R, context: Context, ticket: Ticket, status: string) => {
+		const failed = await tracker.setStatus(ticket.id, status).then(() => null, (error: unknown) => message(error));
+		if (failed !== null) log(ticket, `status ${status} failed: ${failed}`);
+		await note(runtime, context, ticket.id, failed === null ? { kind: "tracker", text: `Ticket status: ${status}` } : { kind: "tracker", level: "warn", text: `Ticket status ${status} failed: ${failed}` });
+	};
 
 	/** Run a command in the ticket's environment (its container in docker mode); output to RUN/<logName>. */
 	const exec = async (ticket: Ticket, command: string, logName: string, context: Context): Promise<number> => {
@@ -255,7 +342,10 @@ export function createPipeline(deps: PipelineDeps) {
 				log(ticket, `${role}-${round}: ${skipped.at(-1)}`);
 			}
 		}
-		if (skipped.length > 0) await appendFile(join(run, "route.log"), `${new Date().toISOString()} ${role}-${round}-${attempt}: ${skipped.join("; ")}\n`);
+		if (skipped.length > 0) {
+			await appendFile(join(run, "route.log"), `${new Date().toISOString()} ${role}-${round}-${attempt}: ${skipped.join("; ")}\n`);
+			await note(runtime, context, ticket.id, { kind: "step", level: "warn", step: `${role}-${round}-${attempt}`, text: `Models skipped: ${skipped.join("; ")}` });
+		}
 		if (model === null) throw new Blocked(`no model left for the ${role} agent: every model in its lane failed or has no login (see route.log)`);
 		// A new attempt starts clean: its old outputs go, so a missing output is this attempt's fault.
 		for (const file of OUTPUTS[role]?.(round) ?? []) await rm(join(run, file), { force: true });
@@ -265,12 +355,15 @@ export function createPipeline(deps: PipelineDeps) {
 			const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: task.id } });
 			await configure(tx, conversation.id, { model, cwd: worktree, extensions: STEP_EXTENSIONS, tools: null, modelTools: null });
 			Object.assign(await tx.doc(StepDoc, conversation.id), { ticketId: ticket.id, name, role, worktree, run, slot: ticket.slot ?? 0 });
+			// The provider session id the step's requests carry: the throttle holds a paused ticket's requests by it.
+			const { sessionId } = await tx.doc(ProviderDoc, conversation.id);
 			const record: StepRecord = {
 				name, role, round, attempt, model: modelName(model), conversationId: conversation.id, taskId: task.id,
-				status: "running", started: Date.now(), ended: null, error: null,
+				status: "running", started: Date.now(), ended: null, error: null, sessionId, pausedMs: 0, usage: null,
 			};
 			await editTicket(tx, ticket.id, (t) => {
 				t.steps.push(record);
+				addEvent(t, { kind: "step", step: name, text: `${name} started on ${modelName(model)}` });
 			});
 			const step: Step = { role, round, attempt, conversationId: conversation.id, model: modelName(model), started: record.started };
 			return { status: "running", checkpoint: { ...current.state.checkpoint, step, stepHead } };
@@ -296,24 +389,46 @@ export function createPipeline(deps: PipelineDeps) {
 			log: (line) => log(ticket, line),
 		});
 		const submission = await handle.submit({ type: "input", content: prompt, requestId: `step:${name}` }, context);
+		// AGENT_TIMEOUT counts the step's own time: time the ticket spent paused moves the deadline.
 		let timedOut = false;
-		const timer = setTimeout(() => {
-			timedOut = true;
-			void handle.abort(context).catch(() => undefined);
-		}, Math.max(1000, step.started + config.agentTimeoutMs - Date.now()));
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let watching = true;
+		const deadline = async () => {
+			const t = await ticketOf(task, runtime, context);
+			const record = t.steps.find((s) => s.name === name);
+			return step.started + config.agentTimeoutMs + (record?.pausedMs ?? 0) + (t.paused ? Date.now() - t.paused.at : 0);
+		};
+		const watch = (ms: number) => {
+			timer = setTimeout(async () => {
+				if (!watching) return;
+				const left = (await deadline().catch(() => Date.now() + 30_000)) - Date.now();
+				if (!watching) return;
+				if (left > 0) return watch(Math.min(left, 30_000));
+				timedOut = true;
+				void handle.abort(context).catch(() => undefined);
+			}, ms);
+		};
+		watch(Math.max(1000, Math.min((await deadline()) - Date.now(), 30_000)));
 		let settled;
 		try {
 			settled = await submission.wait(context);
 		} finally {
+			watching = false;
 			clearTimeout(timer);
 		}
 		const ok = settled.status === "done";
 		const error = ok ? null : timedOut ? `timed out after ${Math.round(config.agentTimeoutMs / 1000)}s` : (settled.reason ?? "failed");
 		if (!ok) log(ticket, `${name} on ${step.model} failed: ${error}`);
+		const usage = sumUsage(await runtime.snapshot(UsageDoc, step.conversationId as ConversationId, context).catch(() => undefined));
 		await runtime.commit(async (tx) => {
 			await editTicket(tx, ticket.id, (t) => {
 				const record = t.steps.find((s) => s.name === name);
-				if (record && record.status === "running") Object.assign(record, { status: ok ? "done" : "failed", ended: Date.now(), error });
+				if (record === undefined || record.status !== "running") return;
+				Object.assign(record, { status: ok ? "done" : "failed", ended: Date.now(), error, usage });
+				const took = duration(Date.now() - record.started - (record.pausedMs ?? 0));
+				addEvent(t, ok
+					? { kind: "step", step: name, text: `${name} done in ${took}${usageText(usage)}` }
+					: { kind: "step", step: name, level: "error", text: `${name} failed after ${took}: ${error}${usageText(usage)}` });
 			});
 			return undefined;
 		}, context);
@@ -330,6 +445,96 @@ export function createPipeline(deps: PipelineDeps) {
 		if (step !== null && step.role === role && step.round === round && (await awaitStep(task, runtime, context, step))) return true;
 		await startStep(task, runtime, context, role, round);
 		return false;
+	};
+
+	/**
+	 * Send `content` to a step's conversation (one that already answered) and wait for the answer.
+	 * The request ID makes it safe to repeat: after a restart the same submission is found.
+	 */
+	const ask = async (runtime: R, context: Context, conversationId: number, content: string, requestId: string): Promise<string | null> => {
+		const handle = await runtime.conversation(conversationId as ConversationId, context);
+		if (handle === undefined) return "its conversation is gone";
+		const submission = await handle.submit({ type: "input", content, requestId }, context);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), config.agentTimeoutMs)));
+		const settled = await Promise.race([submission.wait(context), timeout]).finally(() => clearTimeout(timer));
+		if (settled === "timeout") {
+			await handle.abort(context).catch(() => undefined);
+			return `timed out after ${Math.round(config.agentTimeoutMs / 1000)}s`;
+		}
+		return settled.status === "done" ? null : (settled.reason ?? "failed");
+	};
+	/** A step's usage again (its conversation answered more since it ended). */
+	const refreshUsage = async (runtime: R, context: Context, ticketId: string, step: StepRecord) => {
+		const usage = sumUsage(await runtime.snapshot(UsageDoc, step.conversationId as ConversationId, context).catch(() => undefined));
+		await runtime.commit(async (tx) => {
+			await editTicket(tx, ticketId, (t) => {
+				const record = t.steps.find((s) => s.name === step.name);
+				if (record) record.usage = usage;
+			});
+			return undefined;
+		}, context);
+	};
+	/**
+	 * Simplified Technical English: lint a file a role in STE_ROLES wrote. Hard faults go back to its
+	 * author once (a write through bash is not gated by the hook); what still fails is logged, not blocked.
+	 */
+	const steCheck = async (runtime: R, context: Context, ticket: Ticket, file: string, step: StepRecord, tag: string) => {
+		if (!steRoles().has(step.role)) return;
+		const path = join(ticket.run!, file);
+		let faults = steFaults(path, await readText(path));
+		if (faults.hard === 0) return;
+		await note(runtime, context, ticket.id, { kind: "ste", level: "warn", step: step.name, text: `${file} breaks ${faults.hard} Simplified Technical English rule(s): ${step.name} fixes them` });
+		const failed = await ask(runtime, context, step.conversationId, `${faults.reason}\n\nThe factory checked RUN_DIR/${file}. Rewrite the sentences named above in RUN_DIR/${file}, with the write or edit tool. Keep the meaning. Change nothing else. Reply with one short line.`, `ste:${tag}`);
+		faults = steFaults(path, await readText(path));
+		await note(runtime, context, ticket.id, faults.hard === 0
+			? { kind: "ste", step: step.name, text: `${file} now follows Simplified Technical English` }
+			: { kind: "ste", level: "warn", step: step.name, text: `${file} still breaks ${faults.hard} rule(s)${failed ? ` (${failed})` : ""}: see the log of ${step.name}` });
+	};
+	const latestDone = (ticket: Ticket, role: string) => ticket.steps.findLast((s) => s.role === role && s.status === "done");
+	/** A change you asked for at the gate: the spec writer (or the planner) makes it; a spec change then goes to the planner. */
+	const revise = async (task: T, runtime: R, context: Context, ticket: Ticket, rev: Revision) => {
+		const mark = (change: (r: Revision, t: Ticket) => void) =>
+			runtime.commit(async (tx) => {
+				await editTicket(tx, ticket.id, (t) => {
+					const r = t.revisions?.find((x) => x.id === rev.id);
+					if (r) change(r, t);
+				});
+				return undefined;
+			}, context);
+		if (rev.status === "queued") await mark((r, t) => {
+			r.status = "running";
+			addEvent(t, { kind: "gate", text: `Revising ${rev.file}: ${rev.comment.slice(0, 200)}` });
+		});
+		const before = await head(ticket.worktree!);
+		const files = rev.file === "spec.md" ? ["spec.md", "plan.md"] : ["plan.md"];
+		const quote = rev.quote.trim() ? `The part they selected:\n${rev.quote.trim().split("\n").map((l) => `> ${l}`).join("\n")}\n\n` : "";
+		let error: string | null = null;
+		for (const file of files) {
+			const step = latestDone(ticket, file === "spec.md" ? "spec" : "plan");
+			if (step === undefined) {
+				error = `no ${file === "spec.md" ? "spec writer" : "planner"} step to ask`;
+				break;
+			}
+			const prompt = file === rev.file
+				? `A person reviewing ${file} before they approve it asks for a change.\n\n${quote}Their request:\n${rev.comment.trim()}\n\nUpdate RUN_DIR/${file} with the write or edit tool: make this change, and keep the rest unless the change needs more. Keep the format your first instructions give (also the Diagram section${file === "spec.md" ? " and the last STATUS line" : ""}). Reply with one short line that says what you changed.`
+				: `The spec changed after a review (RUN_DIR/spec.md). The change they asked for: ${rev.comment.trim()}\n\nRead spec.md again and update RUN_DIR/plan.md so it matches it: the tests and files for new or changed acceptance criteria, and the Diagram. Change nothing else. Reply with one short line.`;
+			const failed = await ask(runtime, context, step.conversationId, prompt, `revise:${rev.id}:${file}`);
+			await refreshUsage(runtime, context, ticket.id, step);
+			if (failed !== null) {
+				error = `${step.name}: ${failed}`;
+				break;
+			}
+			await steCheck(runtime, context, ticket, file, step, `revise:${rev.id}:${file}`);
+		}
+		if (error === null && (await head(ticket.worktree!)) !== before) error = "an agent committed to the branch, but it may only read";
+		await mark((r, t) => {
+			Object.assign(r, { status: error === null ? "done" : "failed", ended: Date.now(), error });
+			addEvent(t, error === null
+				? { kind: "gate", text: `${rev.file} revised${rev.file === "spec.md" ? ", and plan.md updated to match" : ""}` }
+				: { kind: "gate", level: "error", text: `The change to ${rev.file} failed: ${error}` });
+		});
+		if (error === null) for (const file of files) await attachOnce(runtime, context, ticket, file, await readText(join(ticket.run!, file)), `r${rev.id}`);
 	};
 
 	const readOnly = async (ticket: Ticket, stepHead: string | null, label: string) => {
@@ -386,6 +591,7 @@ export function createPipeline(deps: PipelineDeps) {
 					t.slot = free;
 					t.state = "running";
 					t.phase = "fetch";
+					addEvent(t, { kind: "phase", text: `${label("fetch")} (cell slot ${free})` });
 				});
 				return { status: "running", checkpoint: { ...checkpoint, phase: "fetch", polls: 0 } };
 			}, context);
@@ -393,7 +599,7 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		fetch: async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
-			await setStatus(ticket, config.statuses.working);
+			await setStatus(runtime, context, ticket, config.statuses.working);
 			const { ticket: md, comments } = await tracker.fetch(ticket.id);
 			await writeFile(join(ticket.run!, "ticket.md"), md);
 			await writeFile(join(ticket.run!, "comments.md"), comments);
@@ -414,10 +620,12 @@ export function createPipeline(deps: PipelineDeps) {
 				});
 			}
 			log(ticket, `worktree ${how} on ${ticket.branch}`);
+			await note(runtime, context, ticket.id, { kind: "git", text: `Worktree ${how} on ${ticket.branch}` });
 			// A run after one that was stopped or blocked continues where that one was.
 			if (ticket.resume !== null && !task.input.fresh) {
 				const resume = ticket.resume as unknown as Checkpoint;
 				log(ticket, `continues at ${resume.phase} (round ${resume.round}), where the last run stopped`);
+				await note(runtime, context, ticket.id, { kind: "run", text: `Continues at "${label(resume.phase)}", where the last run stopped` });
 				await advance(task, runtime, context, { ...resume, step: null, stepHead: null, polls: 0, freshDone: true });
 				return;
 			}
@@ -427,14 +635,16 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		spec: async (task, runtime, context) => {
 			if (!(await runAgent(task, runtime, context, "spec", 1))) return;
-			const ticket = await ticketOf(task, runtime, context);
+			let ticket = await ticketOf(task, runtime, context);
+			await steCheck(runtime, context, ticket, "spec.md", latestDone(ticket, "spec")!, "spec");
+			ticket = await ticketOf(task, runtime, context);
 			await readOnly(ticket, task.state.checkpoint.stepHead, "spec writer");
 			const spec = await readText(join(ticket.run!, "spec.md"));
 			if (spec.trim() === "") throw new Blocked("spec writer wrote no spec.md");
 			const status = lastLine(spec) === "STATUS: NEEDS_INPUT" ? "NEEDS_INPUT" : "READY";
 			if (status === "NEEDS_INPUT") {
 				await commentOnce(runtime, context, ticket, "needs-input", `Spec needs input before coding:\n\n${spec}`, true);
-				await setStatus(ticket, config.statuses.blocked);
+				await setStatus(runtime, context, ticket, config.statuses.blocked);
 				await finish(task, runtime, context, { outcome: "needs_input", pr: null, reason: "the spec writer needs answers" }, (t) => {
 					Object.assign(t, { specStatus: status, state: "blocked", blocked: "the spec has open questions: answer them in the ticket, then run it again", phase: "spec" });
 				});
@@ -447,6 +657,7 @@ export function createPipeline(deps: PipelineDeps) {
 		plan: async (task, runtime, context) => {
 			if (!(await runAgent(task, runtime, context, "plan", 1))) return;
 			const ticket = await ticketOf(task, runtime, context);
+			await steCheck(runtime, context, ticket, "plan.md", latestDone(ticket, "plan")!, "plan");
 			await readOnly(ticket, task.state.checkpoint.stepHead, "planner");
 			if ((await readText(join(ticket.run!, "plan.md"))).trim() === "") throw new Blocked("planner wrote no plan.md");
 			await advance(task, runtime, context, { phase: "post-spec", step: null });
@@ -455,14 +666,16 @@ export function createPipeline(deps: PipelineDeps) {
 			const ticket = await ticketOf(task, runtime, context);
 			const spec = await readText(join(ticket.run!, "spec.md"));
 			const plan = await readText(join(ticket.run!, "plan.md"));
+			await attachOnce(runtime, context, ticket, "spec.md", spec);
+			await attachOnce(runtime, context, ticket, "plan.md", plan);
 			await commentOnce(runtime, context, ticket, "spec", `SPEC\n\n${spec}\n\nPLAN\n\n${plan}`);
 			if (task.input.gate) {
-				await setStatus(ticket, config.statuses.specReview);
+				await setStatus(runtime, context, ticket, config.statuses.specReview);
 				await advance(task, runtime, context, { phase: "gate", polls: 0 }, (t) => {
 					t.state = "waiting_approval";
 				});
 			} else {
-				await setStatus(ticket, config.statuses.approved);
+				await setStatus(runtime, context, ticket, config.statuses.approved);
 				await advance(task, runtime, context, { phase: "setup", polls: 0 });
 			}
 		},
@@ -470,12 +683,20 @@ export function createPipeline(deps: PipelineDeps) {
 			// Waits durably for you: Approve on the dashboard (`ff approve`), or move the ticket to S_APPROVED.
 			let ticket = await ticketOf(task, runtime, context);
 			const polls = task.state.checkpoint.polls;
+			// A change you asked for on the spec or the plan comes before your approval.
+			const pending = (ticket.revisions ?? []).find((r) => r.status === "queued" || r.status === "running");
+			if (pending !== undefined) {
+				await revise(task, runtime, context, ticket, pending);
+				await advance(task, runtime, context, { polls: polls + 1 });
+				return;
+			}
 			if (ticket.approved === null && polls % 12 === 0) {
 				const status = await tracker.info(ticket.id).then((i) => i.status, () => "");
 				if (status.toLowerCase() === config.statuses.approved.toLowerCase()) {
 					await runtime.commit(async (tx) => {
 						await editTicket(tx, ticket.id, (t) => {
 							t.approved ??= { at: Date.now(), note: "" };
+							addEvent(t, { kind: "gate", text: `Spec approved: the ticket was moved to ${config.statuses.approved}` });
 						});
 						return undefined;
 					}, context);
@@ -491,7 +712,7 @@ export function createPipeline(deps: PipelineDeps) {
 			const { ticket: md, comments } = await tracker.fetch(ticket.id);
 			await writeFile(join(ticket.run!, "ticket.md"), md);
 			await writeFile(join(ticket.run!, "comments.md"), ticket.approved.note ? `${comments}\n[approval note] ${ticket.approved.note}\n` : comments);
-			await setStatus(ticket, config.statuses.working);
+			await setStatus(runtime, context, ticket, config.statuses.working);
 			await advance(task, runtime, context, { phase: "setup", polls: 0 }, (t) => {
 				t.state = "running";
 			});
@@ -509,7 +730,9 @@ export function createPipeline(deps: PipelineDeps) {
 			const ok = await verify(ticket, 1, false, context);
 			if (!ok) log(ticket, `origin/${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block`);
 			await advance(task, runtime, context, { phase: "test", baselineRed: !ok }, (t) => {
-				if (config.verifyCmd) t.verify.push({ round: 1, ok, log: "verify-1.log" });
+				if (!config.verifyCmd) return;
+				t.verify.push({ round: 1, ok, log: "verify-1.log" });
+				addEvent(t, ok ? { kind: "verify", text: `VERIFY_CMD passes on ${config.base}` } : { kind: "verify", level: "warn", text: `${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block` });
 			});
 		},
 		test: async (task, runtime, context) => {
@@ -529,7 +752,7 @@ export function createPipeline(deps: PipelineDeps) {
 			if (blocked.trim() !== "") throw new Blocked(`coder blocked: ${blocked.slice(0, 1500)}`);
 			await onBranch(ticket, "coder");
 			await keptTests(ticket, task.state.checkpoint.frozen, "coder");
-			if ((await gitOk(ticket.worktree!, "rev-list", "--count", `origin/${config.base}..HEAD`)) === "0") throw new Blocked("coder made no commits");
+			if ((await gitOk(ticket.worktree!, "rev-list", "--count", `refs/remotes/origin/${config.base}..HEAD`)) === "0") throw new Blocked("coder made no commits");
 			await advance(task, runtime, context, { phase: "verify-code", step: null });
 		},
 		"verify-code": async (task, runtime, context) => {
@@ -538,7 +761,9 @@ export function createPipeline(deps: PipelineDeps) {
 			const round = cp.round === 1 ? 2 : 3;
 			const ok = await verify(ticket, round, cp.baselineRed, context);
 			const record = (t: Ticket) => {
-				if (config.verifyCmd) t.verify.push({ round, ok, log: `verify-${round}.log` });
+				if (!config.verifyCmd) return;
+				t.verify.push({ round, ok, log: `verify-${round}.log` });
+				addEvent(t, { kind: "verify", level: ok ? "info" : cp.baselineRed ? "warn" : "error", text: `VERIFY_CMD ${ok ? "passes" : "fails"} after the coder's ${cp.round === 1 ? "first" : "second"} try (verify-${round}.log)` });
 			};
 			if (ok || cp.baselineRed) {
 				await advance(task, runtime, context, { phase: "docs", round: 1 }, record);
@@ -575,6 +800,7 @@ export function createPipeline(deps: PipelineDeps) {
 			}
 			log(ticket, `PR ${pr}`);
 			await advance(task, runtime, context, { phase: "review", round: 1 }, (t) => {
+				addEvent(t, { kind: "pr", text: `${t.pr === null ? "Draft PR opened" : "PR"}: ${pr} (branch ${t.branch} pushed)` });
 				t.pr = pr;
 			});
 		},
@@ -594,6 +820,8 @@ export function createPipeline(deps: PipelineDeps) {
 			const last = verdict === "PASS" || round >= config.maxReviewRounds;
 			await advance(task, runtime, context, { phase: last ? (task.state.checkpoint.fixed ? "pr-summary-2" : "judge") : "fix", step: null, verdict }, (t) => {
 				t.reviews.push({ round, verdict, file });
+				const end = verdict === "FIX" && last ? ` (no rounds left: MAX_REVIEW_ROUNDS=${config.maxReviewRounds})` : "";
+				addEvent(t, { kind: "review", level: verdict === "PASS" ? "info" : "warn", text: `Review ${round}: ${verdict}${end}; posted on the PR` });
 			});
 		},
 		fix: async (task, runtime, context) => {
@@ -606,7 +834,10 @@ export function createPipeline(deps: PipelineDeps) {
 			const ok = await verify(ticket, 3 + round, task.state.checkpoint.baselineRed, context);
 			await push(ticket.worktree!, ticket.branch!);
 			await advance(task, runtime, context, { phase: "review", round: round + 1, step: null, fixed: true }, (t) => {
-				if (config.verifyCmd) t.verify.push({ round: 3 + round, ok, log: `verify-${3 + round}.log` });
+				addEvent(t, { kind: "git", text: `Fixes pushed to ${ticket.branch}` });
+				if (!config.verifyCmd) return;
+				t.verify.push({ round: 3 + round, ok, log: `verify-${3 + round}.log` });
+				addEvent(t, { kind: "verify", level: ok ? "info" : "warn", text: `VERIFY_CMD ${ok ? "passes" : "fails"} after fix ${round} (verify-${3 + round}.log)` });
 			});
 		},
 		"pr-summary-2": async (task, runtime, context) => {
@@ -641,6 +872,7 @@ export function createPipeline(deps: PipelineDeps) {
 			}
 			await advance(task, runtime, context, { phase: "report", step: null }, (t) => {
 				t.judge = judge;
+				addEvent(t, judge ? { kind: "review", text: `Judge: ${judge.score}/5. ${judge.summary}`.slice(0, 400) } : { kind: "review", level: "warn", text: "Judge skipped (best effort)" });
 			});
 		},
 		report: async (task, runtime, context) => {
@@ -651,7 +883,7 @@ export function createPipeline(deps: PipelineDeps) {
 			await commentOnce(runtime, context, ticket, "report", pass
 				? `PR ready for human review: ${ticket.pr}\nAI review passed (no P1/P2).${graded}`
 				: `PR (draft): ${ticket.pr}\nAI review still has P1/P2 findings after ${config.maxReviewRounds} rounds. Needs a human. See PR comments.${graded}`);
-			await setStatus(ticket, config.statuses.inReview);
+			await setStatus(runtime, context, ticket, config.statuses.inReview);
 			await finish(task, runtime, context, { outcome: pass ? "in_review" : "draft", pr: ticket.pr, reason: null }, (t) => {
 				t.state = "in_review";
 				t.phase = "report";
@@ -661,18 +893,32 @@ export function createPipeline(deps: PipelineDeps) {
 
 	/** Every phase: a Blocked error (or any other failure) blocks the ticket instead of faulting the task. */
 	const guarded = (phase: Phase): Handler => async (task, runtime, context) => {
+		// Paused: hold before the phase (a waiting phase must commit a changed checkpoint).
+		if ((await ticketOf(task, runtime, context)).paused) {
+			await runtime.commit(async (_tx, current) => ({ status: "running", checkpoint: { ...current.state.checkpoint, polls: current.state.checkpoint.polls + 1 } }), context);
+			await sleep(gatePollMs, runtime.signal);
+			return;
+		}
 		try {
 			await phases[phase](task, runtime, context);
 		} catch (error) {
 			if (runtime.signal.aborted) throw error; // stopping or closing: the abort handler or the next run decides
-			const reason = error instanceof Error ? error.message : String(error);
 			const ticket = await ticketOf(task, runtime, context);
+			// A deleted ticket: say so plainly, and do not post to it (every call would fail the same way).
+			const gone = error instanceof TicketGone;
+			const reason = gone
+				? `${error.message}${ticket.source ? ": make a new one with New ClickUp ticket (or Fix this on the Sentry issue)" : ": restore it in ClickUp, then Run again, or Remove it"}`
+				: error instanceof Error ? error.message : String(error);
 			deps.log(`${ticket.cid} FAIL in ${phase}: ${reason}`);
-			await commentOnce(runtime, context, ticket, `fail:${phase}`, `Factory stopped: ${reason}\nLogs: ${ticket.run}\nTo retry: ff run ${ticket.cid}`);
-			await setStatus(ticket, config.statuses.blocked);
+			if (!gone) {
+				await commentOnce(runtime, context, ticket, `fail:${phase}`, `Factory stopped: ${reason}\nLogs: ${ticket.run}\nTo retry: ff run ${ticket.cid}`);
+				await setStatus(runtime, context, ticket, config.statuses.blocked);
+			}
 			await finish(task, runtime, context, { outcome: "blocked", pr: ticket.pr, reason }, (t) => {
 				t.state = "blocked";
+				t.phase = phase;
 				t.blocked = `${phase}: ${reason}`;
+				t.gone = gone;
 			});
 		}
 	};
@@ -690,6 +936,8 @@ export function createPipeline(deps: PipelineDeps) {
 				await editTicket(tx, task.input.ticketId, (t) => {
 					t.state = "stopped";
 					t.slot = null;
+					t.paused = null;
+					addEvent(t, { kind: "control", level: "warn", text: "Stopped" });
 				});
 				return { status: "terminal", outcome: { status: "aborted" } };
 			}, context);

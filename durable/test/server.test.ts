@@ -83,12 +83,24 @@ describe("server", { timeout: 60_000 }, () => {
 		assert.equal(steer.step, "code-1-1");
 		const bad = await post("/api/tickets/T-9/steer", { text: "" });
 		assert.equal(bad.status, 400);
+		const paused = await post("/api/tickets/T-9/pause", {});
+		assert.equal(paused.status, 200);
+		assert.equal((await paused.json()).paused.reason, "you");
+		assert.equal((await post("/api/tickets/T-9/resume", {})).status, 200);
+		assert.equal((await post("/api/tickets/T-9/resume", {})).status, 409, "not paused");
+		const detail = await (await fetch(`${url}/api/tickets/T-9`)).json();
+		assert.equal(detail.phases[0].phase, "start");
+		assert.ok(detail.ticket.events.some((e: { text: string }) => /^Paused by you/.test(e.text)));
+		assert.ok(detail.ticket.steps.every((s: { usage: unknown }) => s.usage !== undefined), "running steps report their usage so far");
 		assert.equal((await post("/api/tickets/T-9/stop", {})).status, 200);
 		for (let i = 0; i < 200 && (await factory.ticket("T-9"))?.state !== "stopped"; i++) await new Promise((r) => setTimeout(r, 50));
 		assert.equal((await factory.ticket("T-9"))?.state, "stopped");
 		const overview = await (await fetch(`${url}/api/overview`)).json();
 		assert.equal(overview.tickets[0].id, "T-9");
 		assert.equal(overview.sentry.configured, false);
+		assert.equal(overview.usage.limits.rpm, 50);
+		assert.ok(overview.usage.today.total.requests > 0, "the agents' requests were counted");
+		assert.equal((await post("/api/tickets/T-9/pause", {})).status, 409, "a stopped ticket cannot pause");
 	});
 
 	it("rejects bad ids and unknown routes", async () => {

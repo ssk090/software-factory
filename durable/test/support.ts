@@ -10,7 +10,7 @@ import { fauxAssistantMessage, type FauxResponseStep, fauxProvider, fauxToolCall
 import { loadConfig } from "../src/config.ts";
 import type { GitHost } from "../src/github.ts";
 import type { Lanes } from "../src/lanes.ts";
-import type { Sprint, SprintTask, TicketInfo, Tracker } from "../src/tracker.ts";
+import { type Sprint, type SprintTask, type TicketInfo, TicketGone, type Tracker } from "../src/tracker.ts";
 
 export const here = join(import.meta.dirname, "..", "..");
 
@@ -50,13 +50,17 @@ export function testConfig(repo: string, data: string, extra: Record<string, str
 export class FakeTracker implements Tracker {
 	readonly log: string[] = [];
 	status = new Map<string, string>();
+	/** Tickets deleted in the tracker. */
+	readonly deleted = new Set<string>();
 	async info(id: string): Promise<TicketInfo> {
+		if (this.deleted.has(id)) throw new TicketGone(id, "deleted");
 		return { id, cid: id, title: `test ticket ${id}`, url: `https://example.test/t/${id}`, status: this.status.get(id) ?? "to do", description: "Skills: no-such-skill, ../../escape" };
 	}
 	async fetch(id: string) {
 		return { ticket: `# ${id}: test\nSkills: no-such-skill, ../../escape\n`, comments: "" };
 	}
 	async setStatus(id: string, status: string) {
+		if (this.deleted.has(id)) throw new Error(`HTTP 404: ${id} deleted`);
 		this.status.set(id, status);
 		this.log.push(`status ${id} ${status}`);
 	}
@@ -71,6 +75,12 @@ export class FakeTracker implements Tracker {
 	}
 	async sprint(): Promise<{ sprint: Sprint; tasks: SprintTask[] }> {
 		return { sprint: { id: "s1", name: "Sprint 1", start: null, due: null }, tasks: [] };
+	}
+	readonly attached = new Map<string, string>();
+	async attach(id: string, name: string, content: string) {
+		if (this.deleted.has(id)) throw new TicketGone(id, "deleted");
+		this.attached.set(`${id}/${name}`, content);
+		this.log.push(`attach ${id} ${name}`);
 	}
 	async create(_list: string, name: string) {
 		const id = `NEW-${this.log.length}`;
@@ -127,6 +137,8 @@ export type Behaviour = {
 	onInterrupted?: (result: string) => void;
 	/** Called with every request a reviewer makes. */
 	onReview?: (messages: readonly Message[]) => void;
+	/** The spec writer first writes prose that breaks Simplified Technical English. */
+	badSpec?: boolean;
 };
 
 /**
@@ -148,6 +160,18 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 		if (prompt.includes("# Agent: coder")) behaviour.onCoder?.(messages);
 		if (prompt.includes("# Agent: code reviewer")) behaviour.onReview?.(messages);
 		const lastResult = messages.findLast((m) => m.role === "toolResult");
+		// A change asked at the gate, sent to the agent that wrote the file (a later user message).
+		const last = messages.at(-1);
+		const asked = last?.role === "user" && last !== messages.find((m) => m.role === "user") ? text(last) : "";
+		if (/asks for a change/.test(asked)) {
+			const file = /Update RUN_DIR\/(spec|plan)\.md/.exec(asked)?.[1] ?? "spec";
+			return write(`${run}/${file}.md`, file === "spec" ? "AC-1: it works\nAC-2: the list can be empty\nSTATUS: READY\n" : "plan: AC-1 -> ac1.test\nplan: AC-2 -> ac2.test\n");
+		}
+		if (/The spec changed after a review/.test(asked)) return write(`${run}/plan.md`, "plan: AC-1 -> ac1.test\nplan: AC-2 -> ac2.test\n");
+		// Blocked for Simplified Technical English: write it again, plainly.
+		if (lastResult?.role === "toolResult" && lastResult.isError && /Simplified Technical English/.test(text(lastResult))) {
+			return write(`${run}/spec.md`, "AC-1: it works\nSTATUS: READY\n");
+		}
 		// Like a real model: a call that was interrupted (the factory stopped) is made again, once.
 		const interrupted = lastResult?.role === "toolResult" && lastResult.isError && /interrupt/i.test(text(lastResult));
 		if (interrupted && prompt.includes("# Agent: coder") && !messages.some((m, i) => i < messages.length - 1 && m.role === "toolResult" && m.isError)) {
@@ -155,7 +179,9 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 			return bash(`echo code >> file.txt && git add file.txt && git commit -qm "code after restart"`);
 		}
 		if (acted) return done(`Done (${messages.filter((m) => m.role === "toolResult").length} tool results).`);
-		if (prompt.includes("# Agent: spec writer")) return write(`${run}/spec.md`, "AC-1: it works\nSTATUS: READY\n");
+		if (prompt.includes("# Agent: spec writer")) {
+			return write(`${run}/spec.md`, behaviour.badSpec ? "We are leveraging a robust approach in order to facilitate it.\nSTATUS: READY\n" : "AC-1: it works\nSTATUS: READY\n");
+		}
 		if (prompt.includes("# Agent: planner")) return write(`${run}/plan.md`, "plan: AC-1 -> ac1.test\n");
 		if (prompt.includes("# Agent: test writer")) {
 			return bash(`echo "test AC-1" > ac1.test && git add ac1.test && git commit -qm "test: AC-1 (red)" && echo "AC-1 -> ac1.test" > ${run}/tests.md`);

@@ -1,7 +1,7 @@
 // The tracker: ClickUp (API v2). Ticket status, comments and fetch for the pipeline, the sprint
 // view, and creating tickets from Sentry issues. `Tracker` is the seam: tests pass a fake.
 import type { Config } from "./config.ts";
-import { requestJson } from "./http.ts";
+import { HttpError, requestJson } from "./http.ts";
 
 export type TicketInfo = { id: string; cid: string; title: string; url: string; status: string; description: string };
 export type SprintTask = {
@@ -30,6 +30,8 @@ export interface Tracker {
 	pickup(): Promise<{ id: string; status: string }[]>;
 	sprint(): Promise<{ sprint: Sprint; tasks: SprintTask[] }>;
 	create(listId: string, name: string, markdown: string, tags: string[]): Promise<{ id: string; url: string }>;
+	/** Attach a file to the ticket (a new attachment each call). */
+	attach(id: string, name: string, content: string): Promise<void>;
 }
 
 const API = "https://api.clickup.com/api/v2";
@@ -48,6 +50,15 @@ type Task = {
 };
 const ms = (value: string | null | undefined): number | null => (value && /^\d+$/.test(value) ? Number(value) : null);
 
+/** The tracker has no such ticket (any more): it was deleted, or the id is wrong. */
+export class TicketGone extends Error {
+	readonly id: string;
+	constructor(id: string, how: string) {
+		super(`the ClickUp task ${id} is ${how}`);
+		this.id = id;
+	}
+}
+
 export class ClickUp implements Tracker {
 	private readonly config: Config;
 	constructor(config: Config) {
@@ -61,7 +72,12 @@ export class ClickUp implements Tracker {
 	}
 
 	async info(id: string): Promise<TicketInfo> {
-		const t = await this.api<Task>("GET", `/task/${encodeURIComponent(id)}?include_markdown_description=true`);
+		const t = await this.api<Task>("GET", `/task/${encodeURIComponent(id)}?include_markdown_description=true`).catch((error: unknown) => {
+			if (error instanceof HttpError && error.status === 404) throw new TicketGone(id, /deleted/i.test(error.message) ? "deleted" : "not found");
+			// ClickUp answers 401 for a task id outside your workspace.
+			if (error instanceof HttpError && error.status === 401 && /OAUTH_027|team not authorized/i.test(error.message)) throw new TicketGone(id, "not in your ClickUp workspace");
+			throw error;
+		});
 		return {
 			id: t.id,
 			cid: t.custom_id || t.id,
@@ -89,13 +105,42 @@ export class ClickUp implements Tracker {
 		await this.api("POST", `/task/${encodeURIComponent(id)}/comment`, { comment_text: text, notify_all: false });
 	}
 
+	async attach(id: string, name: string, content: string) {
+		const { token } = this.config.clickup;
+		if (!token) throw new Error("CLICKUP_TOKEN is not set (ff login CLICKUP_TOKEN)");
+		const url = `${API}/task/${encodeURIComponent(id)}/attachment`;
+		// Multipart (not JSON), so not through requestJson; one more try for a transient failure.
+		for (let attempt = 1; ; attempt++) {
+			const form = new FormData();
+			form.append("attachment", new Blob([content], { type: "text/markdown" }), name);
+			const response = await fetch(url, { method: "POST", headers: { Authorization: token }, body: form, signal: AbortSignal.timeout(60_000) });
+			if (response.ok) return;
+			const text = (await response.text().catch(() => "")).slice(0, 500);
+			if (attempt < 2 && (response.status === 429 || response.status >= 500)) {
+				await new Promise((r) => setTimeout(r, 2000));
+				continue;
+			}
+			if (response.status === 404) throw new TicketGone(id, "deleted");
+			throw new HttpError(response.status, text, url);
+		}
+	}
+
 	async resolve(ref: string): Promise<string> {
 		// The last path segment of a URL, without query or fragment.
-		const key = (ref.trim().split("/").at(-1) ?? "").split(/[?#]/)[0] ?? "";
+		let key = (ref.trim().split("/").at(-1) ?? "").split(/[?#]/)[0] ?? "";
 		if (!/^[A-Za-z0-9_-]+$/.test(key)) throw new Error(`not a ticket key, id or URL: ${ref}`);
+		// A bare ticket number (7642): the custom id with the workspace's prefix (CHP-7642).
+		if (/^\d{1,7}$/.test(key)) {
+			const { idPrefix } = this.config.clickup;
+			if (!idPrefix) throw new Error(`${key} is a ticket number: use the full key (e.g. CHP-${key}), or set CLICKUP_ID_PREFIX`);
+			key = `${idPrefix}-${key}`;
+		}
 		// A custom id (CHP-1234) is looked up in the team; a plain id is the id.
 		if (/^[A-Za-z]+-\d+$/.test(key)) {
-			const t = await this.api<Task>("GET", `/task/${key.toUpperCase()}?custom_task_ids=true&team_id=${encodeURIComponent(this.config.clickup.teamId)}`);
+			const t = await this.api<Task>("GET", `/task/${key.toUpperCase()}?custom_task_ids=true&team_id=${encodeURIComponent(this.config.clickup.teamId)}`).catch((error: unknown) => {
+				if (error instanceof HttpError && (error.status === 404 || error.status === 401)) throw new TicketGone(key.toUpperCase(), "not found in your ClickUp workspace");
+				throw error;
+			});
 			return t.id;
 		}
 		return key;

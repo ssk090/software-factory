@@ -1,11 +1,12 @@
 // Sentry and ClickUp intake: paging, merging a sync into the inbox, ranking, the ticket body, and the
 // current sprint; then the durable sync loop and "Fix this" through the factory.
 import assert from "node:assert/strict";
-import { rm } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import { describe, it } from "node:test";
+import { loadConfig } from "../src/config.ts";
 import type { Issue } from "../src/docs.ts";
 import { Factory } from "../src/host.ts";
-import { mergeSync, nextPage, type SentryApi, type SentryIssue, score, ticketFor } from "../src/sentry.ts";
+import { issuesUrl, mergeSync, nextPage, type SentryApi, type SentryIssue, score, ticketFor } from "../src/sentry.ts";
 import { pickSprint } from "../src/tracker.ts";
 import { FakeGitHost, FakeTracker, fauxAgents, lanes, scratchRepo, testConfig } from "./support.ts";
 
@@ -27,6 +28,14 @@ const raw = (id: string, extra: Partial<SentryIssue> = {}): SentryIssue => ({
 });
 
 describe("sentry", () => {
+	it("asks for every listed environment and project", () => {
+		const { sentry } = loadConfig({ SENTRY_ORG: "acme", SENTRY_ENVIRONMENT: "prod, production", SENTRY_PROJECTS: "11,22" });
+		const query = new URL(issuesUrl(sentry)).searchParams;
+		assert.deepEqual(query.getAll("environment"), ["prod", "production"]);
+		assert.deepEqual(query.getAll("project"), ["11", "22"]);
+		assert.equal(new URL(issuesUrl(loadConfig({ SENTRY_ORG: "acme" }).sentry)).searchParams.getAll("environment")[0], "production", "the default");
+	});
+
 	it("follows the Link header only while the next page has results", () => {
 		const link = '<https://sentry.io/api/0/x/?cursor=0:0:1>; rel="previous"; results="false"; cursor="0:0:1", <https://sentry.io/api/0/x/?cursor=0:100:0>; rel="next"; results="true"; cursor="0:100:0"';
 		assert.equal(nextPage(link), "https://sentry.io/api/0/x/?cursor=0:100:0");
@@ -95,6 +104,34 @@ describe("clickup sprint", () => {
 	});
 });
 
+describe("tracker refs", () => {
+	it("asks for the full key for a bare ticket number when no prefix is set", async () => {
+		const { ClickUp } = await import("../src/tracker.ts");
+		await assert.rejects(new ClickUp(loadConfig({ CLICKUP_TOKEN: "x" })).resolve("7642"), /use the full key \(e\.g\. CHP-7642\), or set CLICKUP_ID_PREFIX/);
+		assert.equal(await new ClickUp(loadConfig({ CLICKUP_TOKEN: "x" })).resolve("https://app.clickup.com/t/86bckpd3m"), "86bckpd3m");
+	});
+
+	it("uploads an attachment as multipart, field attachment, with the file's name", async () => {
+		const { ClickUp } = await import("../src/tracker.ts");
+		const real = globalThis.fetch;
+		let seen: { url: string; method?: string; auth?: string; file?: File } | null = null;
+		globalThis.fetch = (async (url: string, init: RequestInit) => {
+			seen = { url, method: init.method, auth: (init.headers as Record<string, string>).Authorization, file: (init.body as FormData).get("attachment") as File };
+			return new Response(JSON.stringify({ id: "a1" }), { status: 200 });
+		}) as typeof fetch;
+		try {
+			await new ClickUp(loadConfig({ CLICKUP_TOKEN: "pk_x" })).attach("86b", "CHP-1-spec.md", "# Spec\nAC-1");
+		} finally {
+			globalThis.fetch = real;
+		}
+		assert.equal(seen!.url, "https://api.clickup.com/api/v2/task/86b/attachment");
+		assert.equal(seen!.method, "POST");
+		assert.equal(seen!.auth, "pk_x");
+		assert.equal(seen!.file!.name, "CHP-1-spec.md");
+		assert.equal(await seen!.file!.text(), "# Spec\nAC-1");
+	});
+});
+
 describe("factory intake", { timeout: 60_000 }, () => {
 	it("syncs Sentry in a durable loop, dismisses, and turns an issue into a ticket and its spec", async () => {
 		const w = await scratchRepo();
@@ -132,6 +169,37 @@ describe("factory intake", { timeout: 60_000 }, () => {
 			assert.equal((await factory.ticket(ticketId))?.state, "waiting_approval", "Fix this plans the spec and waits for you");
 			const now = await factory.syncSentry();
 			assert.deepEqual(now, { issues: 2, complete: true });
+			// Deleted in ClickUp: the run blocks and says so, without posting to it; Fix this makes a new ticket.
+			await factory.stop(ticketId);
+			for (let i = 0; i < 200 && (await factory.ticket(ticketId))?.state !== "stopped"; i++) await new Promise((r) => setTimeout(r, 50));
+			tracker.deleted.add(ticketId);
+			const posted = tracker.log.length;
+			await factory.start(ticketId, { gate: true, fresh: true });
+			for (let i = 0; i < 200 && (await factory.ticket(ticketId))?.state !== "blocked"; i++) await new Promise((r) => setTimeout(r, 50));
+			const dead = (await factory.ticket(ticketId))!;
+			assert.equal(dead.gone, true);
+			assert.equal(dead.phase, "start");
+			assert.match(dead.blocked ?? "", /^start: the ClickUp task \S+ is deleted: make a new one with New ClickUp ticket/);
+			assert.equal(tracker.log.length, posted, "nothing was posted to the deleted ticket");
+			const fresh = await factory.fixIssue("1");
+			assert.notEqual(fresh.ticketId, ticketId, "a new ticket replaces the deleted one");
+			assert.equal((await factory.inbox()).issues["1"]!.ticketId, fresh.ticketId);
+			assert.ok(!(await factory.tickets()).some((t) => t.id === ticketId), "the deleted one leaves the runs list");
+			// A ticket the tracker never had is refused before it gets a row; a stopped one can be removed.
+			tracker.deleted.add("TYPO-1");
+			await assert.rejects(factory.start("TYPO-1"), /TYPO-1 is deleted/);
+			assert.equal(await factory.ticket("TYPO-1"), undefined);
+			for (let i = 0; i < 400 && (await factory.ticket(fresh.ticketId))?.state !== "waiting_approval"; i++) await new Promise((r) => setTimeout(r, 50));
+			await factory.stop(fresh.ticketId);
+			for (let i = 0; i < 200 && (await factory.ticket(fresh.ticketId))?.state !== "stopped"; i++) await new Promise((r) => setTimeout(r, 50));
+			const tree = (await factory.ticket(fresh.ticketId))!;
+			assert.ok(tree.worktree && (await stat(tree.worktree).then(() => true, () => false)), "it had a worktree");
+			const removed = await factory.forget(fresh.ticketId);
+			assert.equal(removed.worktree, tree.worktree);
+			assert.equal(await stat(tree.worktree!).then(() => true, () => false), false, "the worktree is deleted");
+			assert.ok(w.git(w.repo, "show-ref", `refs/heads/${tree.branch}`).trim(), "its branch stays");
+			assert.ok(!tracker.log.some((l) => l.includes("delete")), "nothing is deleted in the tracker");
+			assert.equal((await factory.tickets()).length, 0);
 		} finally {
 			await factory.close();
 		}

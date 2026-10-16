@@ -19,7 +19,53 @@ export type StepRecord = {
 	started: number;
 	ended: number | null;
 	error: string | null;
+	/** The provider session of the step's conversation: the throttle finds the ticket by it. */
+	sessionId?: string;
+	/** Time the ticket was paused while this step ran: AGENT_TIMEOUT does not count it. */
+	pausedMs?: number;
+	/** What the step's model requests used, from the conversation's pi.usage (once it ended). */
+	usage?: StepUsage | null;
 };
+
+export type StepUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; tokens: number; cost: number };
+
+/** A change you asked for on the spec or the plan at the gate: the agent that wrote the file makes it. */
+export type Revision = {
+	id: string;
+	file: "spec.md" | "plan.md";
+	/** The text you selected. */
+	quote: string;
+	/** What you asked for. */
+	comment: string;
+	status: "queued" | "running" | "done" | "failed";
+	at: number;
+	ended: number | null;
+	error: string | null;
+};
+
+/** One thing that happened to a ticket: the dashboard's timeline and log, committed with the change it describes. */
+export type TicketEvent = {
+	at: number;
+	level: "info" | "warn" | "error";
+	/** run, phase, step, gate, verify, tracker, git, pr, review, control, budget */
+	kind: string;
+	text: string;
+	/** The pipeline phase it happened in. */
+	phase: string;
+	/** The agent step it is about, if any. */
+	step: string | null;
+};
+
+/** Events kept per ticket; older ones go first. */
+export const MAX_EVENTS = 1000;
+
+export function addEvent(ticket: Ticket, event: Pick<TicketEvent, "kind" | "text"> & Partial<TicketEvent>): void {
+	// Read it back after `??=`: on a draft, the assigned array is not the one the draft keeps.
+	ticket.events ??= [];
+	const events = ticket.events;
+	events.push({ at: Date.now(), level: "info", phase: ticket.phase, step: null, ...event });
+	if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
+}
 
 export type TicketState =
 	| "queued" // waiting for a free slot (MAX_PARALLEL)
@@ -60,6 +106,14 @@ export type Ticket = {
 	resume: JsonObject | null;
 	/** Where the ticket came from, when the factory made it (a Sentry issue). */
 	source: { kind: "sentry"; issueId: string; shortId: string; permalink: string } | null;
+	/** The tracker no longer has the ticket (deleted): a run cannot go on until it is back or replaced. */
+	gone?: boolean;
+	/** Paused: the pipeline holds at its next phase and its model requests wait. `reason`: "you" or the budget. */
+	paused: { at: number; reason: string } | null;
+	/** Changes you asked for on the spec or the plan at the gate, oldest first. */
+	revisions?: Revision[];
+	/** What happened, oldest first (at most MAX_EVENTS). Tickets from before events have none. */
+	events: TicketEvent[];
 	created: number;
 	updated: number;
 };
@@ -87,6 +141,8 @@ export const newTicket = (id: string): Ticket => ({
 	steps: [],
 	resume: null,
 	source: null,
+	paused: null,
+	events: [],
 	created: 0,
 	updated: 0,
 });

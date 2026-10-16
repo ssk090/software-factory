@@ -8,11 +8,12 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgentEvent, AssistantEntry, type ConversationId, watchEvents } from "@earendil-works/pi-durable";
 import type { Ticket } from "./docs.ts";
 import type { Factory } from "./host.ts";
+import { PHASES } from "./pipeline.ts";
 import { score } from "./sentry.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -125,6 +126,9 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 	await writeFile(options.tokenFile, token, { mode: 0o600 });
 	const allowed = new Set([...LOOPBACK, ...dash.allowedHosts.map((h) => h.toLowerCase())]);
 	const page = await readFile(options.dashboardFile, "utf8");
+	// The one script the page loads from here: the Mermaid bundle, read when first asked for.
+	const mermaidFile = join(dirname(options.dashboardFile), "vendor", "mermaid.min.js");
+	let mermaid: Buffer | null = null;
 
 	const authorized = (req: IncomingMessage) => {
 		const host = (req.headers.host ?? "").toLowerCase().replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
@@ -151,11 +155,17 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 			res.writeHead(200, {
 				"Content-Type": "text/html; charset=utf-8",
 				"Cache-Control": "no-store",
-				"Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+				"Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
 				"X-Frame-Options": "DENY",
 				"Referrer-Policy": "no-referrer",
 			});
 			res.end(page.replace("__FACTORY_TOKEN__", token));
+			return;
+		}
+		if (method === "GET" && url.pathname === "/vendor/mermaid.min.js") {
+			mermaid ??= await readFile(mermaidFile);
+			res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "max-age=86400", "X-Content-Type-Options": "nosniff" });
+			res.end(mermaid);
 			return;
 		}
 		if (parts[0] !== "api") throw new HttpFail(404, "not found");
@@ -171,6 +181,8 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 				sentry: { configured: config.sentry.token !== "" && config.sentry.org !== "", environment: inbox.environment || config.sentry.environment, lastSync: inbox.lastSync, lastError: inbox.lastError, issues },
 				sprintConfigured: config.clickup.sprintListId !== "" || config.clickup.sprintFolderId !== "",
 				specGate: config.specGate,
+				usage: factory.usage(),
+				phases: PHASES,
 			});
 		}
 		if (method === "GET" && area === "sprint") {
@@ -187,8 +199,11 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 				const ticket = await factory.ticket(ticketId);
 				if (ticket === undefined) throw new HttpFail(404, "unknown ticket");
 				const files: Record<string, string | null> = {};
-				for (const name of ["spec.md", "plan.md", "tests.md", "blocked.md", "verify-failed.md", "judge.txt", ...ticket.reviews.map((r) => r.file)]) files[name] = await runFile(ticket, name);
-				return json(res, 200, { ticket, files });
+				const logs = ["route.log", "guard.log", "skills.log", "setup.log", ...ticket.verify.map((v) => v.log)];
+				for (const name of ["spec.md", "plan.md", "tests.md", "blocked.md", "verify-failed.md", "judge.txt", ...ticket.reviews.map((r) => r.file), ...logs]) files[name] = await runFile(ticket, name);
+				// A running step's usage so far (an ended step carries its own).
+				const steps = await Promise.all((ticket.steps ?? []).map(async (s) => (s.usage == null ? { ...s, usage: await factory.stepUsage(s.conversationId) } : s)));
+				return json(res, 200, { ticket: { ...ticket, steps, events: ticket.events ?? [], paused: ticket.paused ?? null }, files, phases: PHASES });
 			}
 			if (method === "GET" && action === "events") return stream(res, url, ticketId);
 			if (method === "POST") {
@@ -198,6 +213,18 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 				}
 				if (action === "approve") return json(res, 200, await factory.approve(ticketId, typeof input.note === "string" ? input.note.slice(0, 20_000) : ""));
 				if (action === "stop") return json(res, 200, (await factory.stop(ticketId), { ok: true }));
+				// Not running, not paused, or the budget is spent: the request conflicts with the ticket's state.
+				const conflict = (error: unknown): never => {
+					throw new HttpFail(409, error instanceof Error ? error.message : String(error));
+				};
+				if (action === "pause") return json(res, 200, await factory.pause(ticketId).catch(conflict));
+				if (action === "forget") return json(res, 200, await factory.forget(ticketId).catch(conflict));
+				if (action === "revise") {
+					const file = str(input.file, "file", 20);
+					const comment = str(input.comment, "comment", 4000);
+					return json(res, 200, await factory.revise(ticketId, { file, quote: typeof input.quote === "string" ? input.quote : "", comment }).catch(conflict));
+				}
+				if (action === "resume") return json(res, 200, await factory.resume(ticketId).catch(conflict));
 				if (action === "steer") return json(res, 200, await factory.steer(ticketId, str(input.text, "text")));
 			}
 		}

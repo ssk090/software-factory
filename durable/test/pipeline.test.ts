@@ -91,6 +91,10 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			await factory.start("T-2", { gate: true });
 			await waitFor(async () => (await factory.ticket("T-2"))?.state === "waiting_approval", "the gate");
 			assert.equal(w.tracker.status.get("T-2"), "spec review");
+			// The spec and the plan are on the ticket as .md files before you approve.
+			assert.match(w.tracker.attached.get("T-2/T-2-spec.md") ?? "", /AC-1: it works/);
+			assert.match(w.tracker.attached.get("T-2/T-2-plan.md") ?? "", /plan: AC-1/);
+			assert.ok((await factory.ticket("T-2"))!.events.some((e) => e.text === "Attached T-2-spec.md to the ticket"));
 			await new Promise((r) => setTimeout(r, 300)); // it keeps waiting
 			assert.equal((await factory.ticket("T-2"))?.state, "waiting_approval");
 			await factory.approve("T-2", "use pnpm");
@@ -98,7 +102,53 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			assert.equal(t.state, "in_review", t.blocked ?? "");
 			assert.match(await readFile(join(t.run!, "comments.md"), "utf8"), /\[approval note\] use pnpm/);
 			assert.ok(w.tracker.log.includes("comment T-2 Approved: use pnpm"));
+			assert.equal(w.tracker.log.filter((l) => l.startsWith("attach ")).length, 2, "each attached once");
 			assert.ok(coderSaw.length > 0);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the spec in Simplified Technical English: a write that breaks a hard rule is blocked with its faults", async () => {
+		const w = await world({ badSpec: true });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-16", { gate: true });
+			await waitFor(async () => ["waiting_approval", "blocked"].includes((await factory.ticket("T-16"))?.state ?? ""), "the gate");
+			const t = (await factory.ticket("T-16"))!;
+			assert.equal(t.state, "waiting_approval", t.blocked ?? "");
+			const spec = await readFile(join(t.run!, "spec.md"), "utf8");
+			assert.doesNotMatch(spec, /leveraging|in order to/, "the blocked text never reached the file");
+			assert.match(spec, /^AC-1: it works/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("takes a change you ask for on the spec at the gate: the spec writer makes it, the planner follows", async () => {
+		const w = await world();
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-17", { gate: true });
+			await waitFor(async () => (await factory.ticket("T-17"))?.state === "waiting_approval", "the gate");
+			await assert.rejects(factory.revise("T-17", { file: "notes.md", quote: "", comment: "x" }), /only spec\.md and plan\.md/);
+			await assert.rejects(factory.revise("T-17", { file: "spec.md", quote: "", comment: "  " }), /say what to change/);
+			await factory.revise("T-17", { file: "spec.md", quote: "AC-1: it works", comment: "Add the empty list case." });
+			await waitFor(async () => ["done", "failed"].includes((await factory.ticket("T-17"))?.revisions?.[0]?.status ?? ""), "the revision", 30_000);
+			let t = (await factory.ticket("T-17"))!;
+			assert.equal(t.revisions![0]!.status, "done", t.revisions![0]!.error ?? "");
+			assert.equal(t.state, "waiting_approval", "it still waits for you");
+			assert.match(await readFile(join(t.run!, "spec.md"), "utf8"), /AC-2: the list can be empty/);
+			assert.match(await readFile(join(t.run!, "plan.md"), "utf8"), /AC-2 -> ac2\.test/, "the planner followed the spec");
+			assert.ok(t.events.some((e) => e.text === "spec.md revised, and plan.md updated to match"), t.events.map((e) => e.text).join("\n"));
+			assert.equal(w.tracker.log.filter((l) => l === "attach T-17 T-17-spec.md").length, 2, "the new spec is attached again");
+			assert.deepEqual(t.steps.map((s) => s.name), ["spec-1-1", "plan-1-1"], "the same agents, no new steps");
+			await factory.approve("T-17");
+			t = await settle(factory, "T-17");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			await assert.rejects(factory.revise("T-17", { file: "spec.md", quote: "", comment: "late" }), /not waiting for your approval/);
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });
@@ -165,6 +215,21 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			assert.match(interrupted, /interrupt/i);
 			assert.ok(lines.some((l) => /T-K: ended 1 command\(s\) left running by the last factory/.test(l)), lines.join("\n"));
 			assert.ok(!recorded.some(alive), "the orphan is gone");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("cuts the worktree from the remote base even when a local branch is named origin/<base>", async () => {
+		const w = await world();
+		w.git(w.repo, "branch", "origin/main"); // makes the short name origin/main ambiguous
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-15", { gate: true });
+			await waitFor(async () => ["waiting_approval", "blocked"].includes((await factory.ticket("T-15"))?.state ?? ""), "the gate");
+			const t = (await factory.ticket("T-15"))!;
+			assert.equal(t.state, "waiting_approval", t.blocked ?? "");
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });
@@ -284,6 +349,65 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			const t = await settle(factory, "T-6");
 			assert.equal(t.state, "in_review", t.blocked ?? "");
 			assert.match(saw, /Use pnpm, not npm\./);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("pauses mid-step: the step's next model request waits until you continue, and its paused time is not its own", async () => {
+		const w = await world({ coderSleep: 1 });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-12", { gate: false });
+			const run = join(w.data, "runs", "T-12");
+			await waitFor(() => readFile(join(run, "coder-started")).then(() => true, () => false), "the coder's bash");
+			const paused = await factory.pause("T-12");
+			assert.equal(paused.paused?.reason, "you");
+			await assert.rejects(factory.resume("T-13"), /not paused/);
+			// The bash (sleep 1) ends; the coder's next request is held, so the step does not finish.
+			await new Promise((r) => setTimeout(r, 2500));
+			let t = (await factory.ticket("T-12"))!;
+			assert.equal(t.steps.find((s) => s.name === "code-1-1")?.status, "running", "held while paused");
+			assert.match(factory.usage().waiting.map((x) => x.reason).join(" "), /T-12 is paused \(by you\)/);
+			await factory.resume("T-12");
+			t = await settle(factory, "T-12");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.equal(t.paused, null);
+			const code = t.steps.find((s) => s.name === "code-1-1")!;
+			assert.ok((code.pausedMs ?? 0) >= 2000, `paused time is counted apart: ${code.pausedMs}`);
+			// The timeline and the log: phases in order, steps, the pause, the end.
+			const texts = t.events.map((e) => e.text);
+			assert.match(texts[0]!, /^Run started/);
+			const phases = t.events.filter((e) => e.kind === "phase").map((e) => e.phase);
+			assert.deepEqual(phases.slice(0, 6), ["admit", "fetch", "worktree", "spec", "plan", "post-spec"]);
+			assert.ok(texts.some((x) => /^Paused by you; code-1-1 finishes its current request, then waits/.test(x)), texts.join("\n"));
+			assert.ok(texts.some((x) => /^Continued by you after \d/.test(x)));
+			assert.ok(texts.some((x) => /^code-1-1 done in /.test(x)));
+			assert.ok(texts.some((x) => /^Ticket status: in progress/.test(x)));
+			assert.match(texts.at(-1)!, /^Done: PR ready for human review/);
+			assert.ok(t.steps.every((s) => s.sessionId && s.usage !== undefined), "each step knows its provider session and its usage");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("pauses running tickets when the daily budget is spent, and will not continue them until it is back", async () => {
+		const w = await world({ coderSleep: 5 }, { DAILY_BUDGET_USD: "1" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-14", { gate: false });
+			await waitFor(async () => (await factory.ticket("T-14"))?.steps.some((s) => s.name === "code-1-1") === true, "the coder");
+			const cost = { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 2, output: 0, cacheRead: 0, cacheWrite: 0, total: 2 } };
+			factory.throttle.record(await factory.throttle.admit("faux"), cost);
+			await (factory as unknown as { watchBudget(): Promise<void> }).watchBudget();
+			const t = (await factory.ticket("T-14"))!;
+			assert.equal(t.paused?.reason, "daily budget");
+			assert.match(t.events.at(-1)!.text, /^Paused: daily budget reached: \$2\.00 of \$1\.00 spent today/);
+			await assert.rejects(factory.resume("T-14"), /daily budget reached.*raise DAILY_BUDGET_USD/);
+			await factory.stop("T-14");
+			assert.equal((await settle(factory, "T-14")).paused, null, "stopping clears the pause");
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });
