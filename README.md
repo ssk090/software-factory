@@ -93,10 +93,15 @@ The ticket's status in ClickUp shows where it is; the factory's own state is in 
 | `S_IN_REVIEW` | PR open, ready for a human | factory |
 | `S_BLOCKED` | failed or needs answers, reason on the dashboard (and as a comment with `TRACKER_COMMENTS=1`) | factory |
 
+- **The coordinator repairs what the checks find:** when a check the factory runs fails on the branch (the push is refused by the repo's pre-push hooks, the secret scan stops the push, VERIFY_CMD still fails after the coder's second try, VERIFY_CMD is killed for memory, or the coder stops with `blocked.md`), the coordinator agent (`agents/coordinate.md`, Sonnet 5.5 first) gets the failure in `failure-N.md`. It reproduces it, finds whether this branch caused it or the base already has it, fixes it on the branch (never by silencing a check or bypassing a hook), proves the fix, and writes `repair-N.md`. Then the phase runs again. At most `MAX_REPAIRS` (default 2) per phase and run; a failure that is not the ticket's (the environment, the base) stops with the coordinator's explanation in `blocked.md`.
+- **Lessons (self-improving):** each repair ends with a one-line lesson about the repo. The factory keeps them in `state/lessons.md` (at most 40, no secrets) and puts them into the prompt of every agent that changes code from then on. `ff lessons` prints them; edit or delete a line freely.
+- **No secrets in the PR:** before every push the factory scans everything it would send: the added lines, the added files and the commit messages. It looks for the factory's own secrets by value (every TOKEN, KEY, SECRET or PASSWORD variable) and for well-known token shapes (cloud and git host keys, private keys, connection strings with a password, high-entropy values given to secret names; the noisier patterns skip test files), and for files that hold secrets by nature (`.env`, `*.pem`, `id_rsa`, `credentials.json`). A finding stops the push and goes to the coordinator, which takes the secret out of every unpushed commit. The PR title and body, PR and ticket comments and attachments are redacted before they are posted. The agent guard refuses commands that turn off git hooks (`--no-verify`, `-n`, `HUSKY=0`, `core.hooksPath`) or read secret files (`config.env`, `~/.ssh`, the factory's state). Agents' shells never get the factory's keys, and with `SANDBOX=docker` they see only the worktree and the run folder.
+- **A killed check is not a red base:** when VERIFY_CMD is killed (out of memory, SIGKILL), the factory never treats the base as already failing. The coordinator finds a way to run the same check that fits the sandbox (less parallelism, say) and names it with a `VERIFY:` line; the factory keeps it for this repo in `state/verify.json` when it still runs every script VERIFY_CMD names and cannot pass by itself (`ff doctor` shows it; delete the file to go back). Better still, give Docker more memory (Docker Desktop, Resources) and the sandbox `SANDBOX_ARGS="--memory 8g"`.
+- **A stopped sandbox starts again:** when the system kills a ticket's container (out of memory), the next command starts it again (the files are on this machine) and tells the agent. A coder that stopped because a tool failed goes to the coordinator, which finishes its work; a real question about the spec still stops the ticket.
 - **Ask for a change at the gate:** in the dashboard's reader, select text in spec.md or plan.md and say what should change. The agent that wrote the file changes it, in its own conversation (no new step): a spec change goes to the spec writer, then the planner updates plan.md to match. The gate takes the changes in order before your approval, the new versions are attached to the ticket again, and every change is in the log.
 - **Simplified Technical English (ASD-STE100):** the spec writer and the planner (`STE_ROLES`, default `spec,plan`) write in STE, with [agent-ste](https://github.com/ctotheameron/agent-ste) (MIT). Its rules go into their prompt, a write that breaks a hard rule is blocked with each fault named, and the factory lints spec.md and plan.md after the step: faults left (a write through bash is not gated) go back to the same agent once, and what still fails is logged, not blocked. Code and Mermaid blocks are not checked.
 - **Diagrams:** spec.md has a Mermaid diagram of the behaviour the ticket changes, and plan.md one of criteria, tests and files. The dashboard draws them.
-- **Spec and plan on the ticket:** before the gate, `spec.md` and `plan.md` are attached to the ClickUp ticket as `<ticket>-spec.md` and `<ticket>-plan.md` (each once per run; `TRACKER_ATTACH=0` turns it off).
+- **Spec and plan on the ticket:** when you approve (on the dashboard, with `ff approve`, or by moving the ticket to S_APPROVED), the approved `spec.md` and `plan.md` are attached to the ClickUp ticket as `<ticket>-spec.md` and `<ticket>-plan.md`, once per approval. Without the gate (`SPEC_GATE=0`) they are attached when the plan is done. `TRACKER_ATTACH=0` turns it off.
 - **Spec gate (`SPEC_GATE=1`):** after the plan, the pipeline waits. Approve on the dashboard, with `ff approve <ticket> [note]`, or move the ticket to `S_APPROVED`. Your note and the ticket's comments go to the coder and override the spec.
 - **Needs input:** if the spec writer ends spec.md with `STATUS: NEEDS_INPUT`, its questions are posted and the ticket is blocked. No code is written.
 - **Verify gate (`VERIFY_CMD`):** the factory runs it itself, in the ticket's sandbox. It runs once on the untouched base branch first; if that already fails, the gate only reports. After the coder: a failure gets the coder one more fresh session with the failure (`verify-failed.md`), then the ticket is blocked. After each fix: a failure goes to the next reviewer, who must count it as a P1.
@@ -118,7 +123,7 @@ Agents (`agents/*.md`, see `agents/README.md`): spec writer, planner, test write
 | Shared thing | What keeps tickets apart |
 |---|---|
 | working files | one git worktree per ticket (`worktrees/<ticket>`, branch `{type}/<ticket>/<short-desc>`), cut from the latest `origin/BASE`. Your own checkout is never touched. |
-| the repo's `.git` | a `reference-transaction` hook (`runs/<ticket>/git-hooks`, set for agent commands only) refuses any ref change except the ticket's own branch: other tickets' branches, the base branch, new branches, tags and `git stash` (shared by every worktree). Refusals are logged in `runs/<ticket>/guard.log`. The repo's own hooks still run. |
+| the repo's `.git` | a `reference-transaction` hook (`runs/<ticket>/git-hooks`, set for agent commands only) refuses any ref change except the ticket's own branch: other tickets' branches, the base branch, new branches, tags and `git stash` (shared by every worktree; only lint-staged's own automatic backup, made and dropped by a pre-commit hook, is allowed). Refusals are logged in `runs/<ticket>/guard.log`. The repo's own hooks still run. |
 | git housekeeping | the factory's own fetch, worktree add/remove, push and gc run one at a time. Agents run with `gc.auto=0`. |
 | pushing | only the factory pushes, and only the ticket's branch (a tool hook refuses `git push`). |
 | agent memory | each step is a new conversation; agents of one ticket share only the run folder. |
@@ -159,7 +164,9 @@ Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover
 - **Timeline:** on top, the run's stages (Received, Spec or Root cause, Approval, Tests, Fix, Pull request, Ready) with the one in progress animated; below, the latest run phase by phase: when each started and how long it took, its agent steps (model, time, tokens, cost), and what happened in it (verify results, review verdicts, the PR, pauses). Phases still ahead are shown faded.
 - **Pause, Continue, Stop:** *Pause* holds the ticket: its pipeline waits before its next phase, and its running step finishes the model request and tool call it is in, then waits. *Continue* goes on from there; nothing is lost and paused time does not count toward `AGENT_TIMEOUT`. *Stop* ends the run (*Run again* continues where it stopped). A pause is durable: it survives a restart.
 - **Logs:** every event of the ticket, newest first, filtered by level and kind and searchable. Events are committed in the same commit as the change they describe, so the log matches what the factory did, also after a crash. `ff logs <ticket>` prints them.
+- **Streamed, not polled:** the server pushes the overview and the open ticket the moment they change (`/api/stream`); the dashboard polls only while the stream is down. An approval, a continue or a free slot wakes the waiting pipeline at once.
 - **Live view:** pick a step to see its transcript, tool calls and output as they happen.
+- **Live preview of the spec and plan:** click a spec or plan step: the reader opens the file, and while the step runs it shows the file as the agent types it (the write call is streamed from the model, argument by argument).
 - **Steer:** your message joins the running step after its current tool round.
 - **Spend:** today's model spend against the daily budget, in the sidebar and a stat card, and any request waiting for a rate limit.
 
@@ -184,6 +191,7 @@ Every model request of every agent goes through one throttle (`durable/src/throt
     ff pause | resume <ticket> hold a running ticket before its next phase and model request | continue it
     ff status | show <ticket>  what every ticket is doing | one ticket's steps
     ff logs <ticket>           everything that happened to a ticket, oldest first
+    ff lessons                 what the coordinator learned from failures (state/lessons.md)
     ff usage                   today's model spend per provider, the rate limits, what is waiting
     ff sentry [sync] | fix <issue id> | sprint
     ff gc [days]               remove worktrees of merged or closed PRs, or idle ones
@@ -242,7 +250,8 @@ Every setting, with its default, is in `config.example.env`.
 | `state/factory.sqlite` | the Pi Durable session: every ticket, task, conversation and document |
 | `state/factory.pid`, `state/dash.url`, `state/dash.token` | the serving factory: its pid (one owner), its address, this start's token |
 | `state/usage.json` | today's model spend, per provider (the daily budget) |
-| `runs/<ticket>/` | the run folder agents share: `ticket.md`, `comments.md`, `spec.md`, `plan.md`, `tests.md`, `review-N.md`, `judge.json`, `verify-N.log`, `route.log`, `skills.log`, `guard.log`, `git-hooks/`, `skills/` |
+| `state/lessons.md` | lessons from repaired failures, read by the agents that change code |
+| `runs/<ticket>/` | the run folder agents share: `ticket.md`, `comments.md`, `spec.md`, `plan.md`, `tests.md`, `review-N.md`, `judge.json`, `verify-N.log`, `failure-N.md`, `repair-N.md`, `route.log`, `skills.log`, `guard.log`, `git-hooks/`, `skills/` |
 | `worktrees/<ticket>/` | the ticket's git worktree |
 | `agents/*.md` | the agents' prompts |
 | `durable/lanes.json` | which model each role runs on |
@@ -260,6 +269,8 @@ Every setting, with its default, is in `config.example.env`.
 | `src/env.ts`, `src/git.ts` | where agent commands run (this machine or a container), worktrees, the ticket guard |
 | `src/docs.ts` | the documents: tickets (with their events), step identity, the Sentry inbox |
 | `src/lanes.ts` | model choice per role |
+| `src/secrets.ts` | the secret scan before every push, and redaction of what the factory posts |
+| `src/lessons.ts` | lessons the coordinator learns from failures, for the agents that change code |
 | `src/ste.ts` | Simplified Technical English for STE_ROLES: the prompt rules, the write gate, the file check (agent-ste) |
 | `src/throttle.ts` | every model request: rate limits per provider, the daily budget, paused tickets' requests |
 | `src/tracker.ts`, `src/github.ts`, `src/sentry.ts`, `src/http.ts` | ClickUp, GitHub (`gh`), Sentry |
