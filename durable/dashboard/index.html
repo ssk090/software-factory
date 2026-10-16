@@ -255,6 +255,15 @@
   @keyframes tick-in { from { opacity: 0; transform: translateY(3px); } }
   @keyframes rise { 0% { opacity: 0; transform: translateY(5px); } 35% { opacity: 1; transform: translateY(0); } 100% { opacity: 1; transform: translate(4px, -4px); } }
 
+  /* Live preview: a file the agent is writing, as it writes it */
+  .doc-live { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; padding: 8px 12px; border: 1px solid color-mix(in oklch, var(--info) 40%, var(--border)); border-radius: var(--radius-md); background: color-mix(in oklch, var(--info) 8%, transparent); font-size: 13px; }
+  .doc-live.idle { border-color: var(--border); background: var(--muted); color: var(--muted-foreground); }
+  .md.writing > :last-child::after { content: ""; display: inline-block; width: 7px; height: 1.1em; margin-left: 2px; vertical-align: text-bottom; background: var(--info); animation: caret 1s steps(1) infinite; }
+  @keyframes caret { 50% { opacity: 0; } }
+  .tl-step .preview { font-size: 12px; color: var(--info); white-space: nowrap; }
+  .tl-step .model { flex-shrink: 1; min-width: 4ch; }
+  #doc-tabs:empty { display: none; }
+
   /* Mermaid diagrams in the reader */
   .mermaid-box { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--background); overflow-x: auto; text-align: center; }
   .mermaid-box svg { max-width: 100%; height: auto; }
@@ -296,6 +305,14 @@
   .tl-step.running { border-color: color-mix(in oklch, var(--info) 45%, var(--border)); background: color-mix(in oklch, var(--info) 6%, transparent); }
   .live-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--info); animation: pulse 2s ease-out infinite; }
   .tl-step.held .live-dot { background: var(--warning); animation: none; }
+  /* A crash: red, and pulsing while it is the newest thing that happened (or the coordinator is on it) */
+  .tl-step.failed { border-color: color-mix(in oklch, var(--destructive) 45%, var(--border)); background: color-mix(in oklch, var(--destructive) 6%, transparent); }
+  .live-dot.bad { background: var(--destructive); animation: none; }
+  .live-dot.bad.now { animation: pulse-bad 1.6s ease-out infinite; }
+  .tl-item.failed .tl-dot, .tl-item.repairing .tl-dot { border-color: var(--destructive); background: var(--destructive); animation: pulse-bad 1.6s ease-out infinite; }
+  .stage.failed .stage-bar { animation: glow-bad 2s ease-in-out infinite; }
+  .stage.repairing .stage-bar { background: repeating-linear-gradient(-45deg, color-mix(in oklch, var(--destructive) 75%, transparent) 0 5px, color-mix(in oklch, var(--destructive) 28%, transparent) 5px 10px); background-size: 14.142px 14.142px; animation: stripes 0.9s linear infinite, glow-bad 2s ease-in-out infinite; }
+  .stage.repairing .stage-name { color: var(--destructive); font-weight: 600; }
   .logs-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
   .logs-bar input[type=text] { flex: 1; width: auto; min-width: 140px; }
   table.logs td { padding: 6px 8px; font-size: 13px; }
@@ -309,6 +326,8 @@
   @keyframes stripes { to { background-position: 14.142px 0; } }
   @keyframes glow { 0%, 100% { box-shadow: 0 0 0 1px color-mix(in oklch, var(--info) 50%, transparent); } 50% { box-shadow: 0 0 0 1px color-mix(in oklch, var(--info) 85%, transparent), 0 0 12px 1px color-mix(in oklch, var(--info) 45%, transparent); } }
   @keyframes glow-warn { 0%, 100% { box-shadow: 0 0 0 1px color-mix(in oklch, var(--warning) 45%, transparent); } 50% { box-shadow: 0 0 0 1px color-mix(in oklch, var(--warning) 80%, transparent), 0 0 10px 1px color-mix(in oklch, var(--warning) 40%, transparent); } }
+  @keyframes pulse-bad { 0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--destructive) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+  @keyframes glow-bad { 0%, 100% { box-shadow: 0 0 0 1px color-mix(in oklch, var(--destructive) 45%, transparent); } 50% { box-shadow: 0 0 0 1px color-mix(in oklch, var(--destructive) 85%, transparent), 0 0 12px 1px color-mix(in oklch, var(--destructive) 40%, transparent); } }
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--info) 45%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
   .enter { animation: fade-up 0.22s ease-out both; }
   .view-in { animation: fade-up 0.2s ease-out; }
@@ -395,7 +414,7 @@
   <div class="doc-head"><h2 id="doc-title">Document</h2><div class="seg" id="doc-tabs" role="tablist"></div><span class="grow"></span>
     <button class="act sm" id="doc-copy">Copy</button>
     <button class="row-icon" id="doc-close" aria-label="Close"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></div>
-  <div class="doc-body"><div id="doc-revising"></div><div class="md" id="doc-content"></div></div>
+  <div class="doc-body"><div id="doc-live"></div><div id="doc-revising"></div><div class="md" id="doc-content"></div></div>
   <div class="suggest" id="suggest" role="dialog" aria-label="Ask for a change" hidden>
     <div class="suggest-quote" id="suggest-quote"></div>
     <textarea id="suggest-text" rows="3" aria-label="What should change"></textarea>
@@ -598,17 +617,18 @@ $("run-start").addEventListener("click", (e) => act(e.target, async () => { cons
 
 // ---- Ticket detail: controls, timeline, logs, files, and a live step ----
 let openId = null, source = null, liveFor = null, lastLive = null, lastSig = "";
-let detailTab = "timeline", logLevel = "all", logKind = "all", logQuery = "", detailSeen = new Set();
+let detailTab = "timeline", logLevel = "all", logKind = "all", logQuery = "", detailSeen = new Set(), detailFiles = {};
 const isLive = (t) => t.state === "running" || t.state === "queued" || t.state === "waiting_approval";
 const LEVEL = { info: "", warn: "warn", error: "bad" };
 // Events shown under their phase in the timeline (phase and step events are the timeline itself).
-const NOTE = new Set(["verify", "review", "pr", "gate", "control", "budget", "git", "run"]);
-function closeDetail() { openId = null; liveFor = null; lastSig = ""; source?.close(); source = null; $("main").classList.remove("open"); }
+const NOTE = new Set(["verify", "review", "pr", "gate", "control", "budget", "git", "run", "repair", "lesson", "guard"]);
+function closeDetail() { openId = null; liveFor = null; lastSig = ""; source?.close(); source = null; $("main").classList.remove("open"); connect(); }
 async function openTicket(ticketId) {
   if (openId !== ticketId) { detailSeen = new Set(); detailTab = "timeline"; lastLive = null; liveFor = null; }
   openId = ticketId; lastSig = "";
   $("main").classList.add("open");
   replay($("detail"), "panel-in");
+  connect();
   await drawDetail(true);
 }
 // Looping animations keep their rhythm across redraws: a node drawn now starts mid-cycle, where the old one was.
@@ -620,7 +640,7 @@ const STAGES = [
   { label: "Approval", phases: ["gate"] },
   { label: "Tests", phases: ["setup", "verify-base", "test"] },
   { label: "Fix", phases: ["code", "verify-code", "docs"] },
-  { label: "Pull request", phases: ["pr-summary", "pr", "review", "fix", "pr-summary-2", "judge"] },
+  { label: "Pull request", phases: ["pr-summary", "pr", "review", "fix", "push-fix", "pr-summary-2", "judge"] },
   { label: "Ready", phases: ["report"] },
 ];
 /** The events of the ticket's latest run (a ticket that ran again keeps the earlier ones in its log). */
@@ -634,20 +654,22 @@ function stagesView(t) {
   const cur = Math.max(0, STAGES.findIndex((x) => x.phases.includes(phase)));
   const skipped = new Set(/approved spec/.test(started) ? [1, 2] : started && !/your approval/.test(started) ? [2] : []);
   const finished = !live && t.state === "in_review";
+  const repairing = live && (t.steps || []).some((s) => s.role === "coordinate" && s.status === "running");
   const stateOf = (i) => (skipped.has(i) && i !== cur ? "skipped" : finished || i < cur ? "done" : i > cur ? "next"
-    : live ? (t.paused ? "paused" : t.state === "waiting_approval" ? "waiting" : "current") : t.state === "blocked" ? "failed" : t.state === "stopped" ? "stopped" : "done");
+    : live ? (t.paused ? "paused" : repairing ? "repairing" : t.state === "waiting_approval" ? "waiting" : "current") : t.state === "blocked" ? "failed" : t.state === "stopped" ? "stopped" : "done");
   const name = (x) => (t.source && x.sentry ? x.sentry : x.label);
   const step = runningStep(t);
   const since = events.filter((e) => e.kind === "phase").at(-1)?.at ?? events[0]?.at;
   const sub = finished ? "Done: the PR is ready for your review"
     : !live ? `${t.state === "blocked" ? "Blocked" : t.state === "stopped" ? "Stopped" : "Ended"} at: ${phaseLabel(phase)}`
     : t.paused ? `Paused at: ${phaseLabel(phase)}${step ? ` (${step.name} waits)` : ""}`
+    : repairing ? `Something failed at: ${phaseLabel(phase)}. The coordinator (${step?.name ?? "coordinate"}) is fixing it`
     : t.state === "waiting_approval" ? "Waiting for your approval of the spec"
     : `${phaseLabel(phase)}${step ? ` · ${step.name} on ${step.model.split("/").pop()}` : ""}${since ? ` · ${span(Date.now() - since)}` : ""}`;
   const track = el("div", { class: "stage-track" }, ...STAGES.map((x, i) => {
     const state = stateOf(i);
     const bar = el("div", { class: "stage-bar" });
-    if (state === "current") inPhase(bar, 900, 2000); else if (state === "waiting") inPhase(bar, 2400);
+    if (state === "current" || state === "repairing") inPhase(bar, 900, 2000); else if (state === "waiting") inPhase(bar, 2400); else if (state === "failed") inPhase(bar, 2000);
     return el("div", { class: `stage ${state}`, title: `${name(x)}: ${x.phases.map(phaseLabel).join(", ")}${state === "skipped" ? " (skipped in this run)" : ""}` }, bar, el("div", { class: "stage-name" }, name(x)));
   }));
   return el("div", { class: "stages" }, track, el("div", { class: "stage-now" }, el("div", { class: "stage-title" }, finished ? "Ready" : name(STAGES[cur])), el("div", { class: "stage-sub" }, sub)));
@@ -658,12 +680,22 @@ function stepRow(t, s) {
   const pausing = s.status === "running" && t.paused ? Date.now() - t.paused.at : 0;
   const took = (s.ended ?? Date.now()) - s.started - (s.pausedMs || 0) - pausing;
   const u = s.usage;
-  const look = () => { watch(t.id, s); for (const r of document.querySelectorAll(".tl-step")) r.classList.toggle("watching", r.dataset.conv === String(s.conversationId)); };
+  const writesDoc = s.role === "spec" || s.role === "plan";
+  const look = () => {
+    watch(t.id, s);
+    for (const r of document.querySelectorAll(".tl-step")) r.classList.toggle("watching", r.dataset.conv === String(s.conversationId));
+    if (writesDoc) openStepDoc(t, s, detailFiles); // the spec or plan, live while it is written
+  };
   const running = s.status === "running";
-  return el("div", { class: `tl-step${running ? " running" : ""}${running && t.paused ? " held" : ""}${liveFor === `${t.id}:${s.conversationId}` ? " watching" : ""}`, role: "button", tabindex: "0", "data-conv": s.conversationId, title: s.error || "Watch this step live", onclick: look, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); look(); } } },
-    running ? inPhase(el("span", { class: "live-dot", "aria-hidden": "true" }), 2000) : null,
+  const failed = s.status === "failed";
+  // A crash pulses while it is the newest step and the ticket is stuck on it (blocked, or being repaired).
+  const now = failed && (t.steps || []).at(-1)?.name === s.name;
+  return el("div", { class: `tl-step${running ? " running" : ""}${failed ? " failed" : ""}${running && t.paused ? " held" : ""}${liveFor === `${t.id}:${s.conversationId}` ? " watching" : ""}`, role: "button", tabindex: "0", "data-conv": s.conversationId, title: s.error || (writesDoc ? `Open ${docFor(s.role)}${running ? ", live as it is written" : ""}` : "Watch this step live"), onclick: look, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); look(); } } },
+    running ? inPhase(el("span", { class: "live-dot", "aria-hidden": "true" }), 2000)
+      : failed ? inPhase(el("span", { class: `live-dot bad${now ? " now" : ""}`, "aria-hidden": "true" }), 1600) : null,
     el("span", { class: `chip sm ${s.status === "done" ? "ok" : s.status === "failed" ? "bad" : t.paused ? "warn" : "run"}` }, running && t.paused ? "paused" : s.status),
     el("span", { class: "name" }, s.name), el("span", { class: "model", title: s.model }, s.model.split("/").pop()),
+    writesDoc ? el("span", { class: "preview", title: `Open ${docFor(s.role)}${running ? ", live as it is written" : ""}` }, running ? "Live" : "Preview") : null,
     el("span", { class: "meta" }, [span(took), u && u.tokens ? `${tokens(u.tokens)} tokens` : null, u && u.cost ? money(u.cost) : null].filter(Boolean).join(" · ")));
 }
 
@@ -697,8 +729,9 @@ function timeline(t, phases) {
   marks.forEach((mark, i) => {
     const next = marks[i + 1]?.at ?? Infinity;
     const last = i === marks.length - 1;
-    const state = !last ? "done" : live ? (t.paused ? "paused" : t.state === "waiting_approval" ? "waiting" : "current") : t.state === "blocked" ? "failed" : t.state === "stopped" ? "stopped" : "done";
-    const badge = { paused: ["paused", "warn"], waiting: ["waiting for you", "warn"], current: ["running", "run"], failed: ["blocked", "bad"], stopped: ["stopped", ""] }[state];
+    const repairing = last && live && steps.some((s) => s.role === "coordinate" && s.status === "running");
+    const state = !last ? "done" : live ? (t.paused ? "paused" : repairing ? "repairing" : t.state === "waiting_approval" ? "waiting" : "current") : t.state === "blocked" ? "failed" : t.state === "stopped" ? "stopped" : "done";
+    const badge = { paused: ["paused", "warn"], waiting: ["waiting for you", "warn"], current: ["running", "run"], repairing: ["repairing", "bad"], failed: ["blocked", "bad"], stopped: ["stopped", ""] }[state];
     const key = `p:${mark.at}`;
     const item = el("li", { class: `tl-item ${state}${detailSeen.has(key) ? "" : " enter"}` },
       el("span", { class: "tl-dot" }),
@@ -706,6 +739,7 @@ function timeline(t, phases) {
         el("span", { class: "tl-time", title: new Date(mark.at).toLocaleString() }, `${clock(mark.at)} · ${span(Math.min(next, endAt) - mark.at)}`)));
     if (mark.started) item.append(el("div", { class: "tl-note" }, mark.started));
     if (state === "current") inPhase(item.querySelector(".tl-dot"), 2000);
+    if (state === "failed" || state === "repairing") inPhase(item.querySelector(".tl-dot"), 1600);
     const its = byMark.get(i) || [];
     if (its.length) item.append(el("div", { class: "tl-steps" }, ...its.map((s) => stepRow(t, s))));
     for (const n of notes.filter((n) => n.at >= mark.at && n.at < next)) item.append(el("div", { class: `tl-note ${n.level}` }, n.text));
@@ -715,7 +749,7 @@ function timeline(t, phases) {
   if (live) {
     // What is still ahead, in the usual order (review and fix rounds only when the reviewer asks).
     const kind = events[0].text;
-    const skip = new Set(["start", "fix", "pr-summary-2", ...(/your approval/.test(kind) ? [] : ["gate"]), ...(/approved spec/.test(kind) ? ["spec", "plan", "post-spec", "gate"] : [])]);
+    const skip = new Set(["start", "fix", "push-fix", "pr-summary-2", ...(/your approval/.test(kind) ? [] : ["gate"]), ...(/approved spec/.test(kind) ? ["spec", "plan", "post-spec", "gate"] : [])]);
     const flow = phases.map((p) => p.phase).filter((p) => !skip.has(p));
     for (const p of flow.slice(flow.indexOf(marks.at(-1).phase) + 1)) {
       list.append(el("li", { class: "tl-item next" }, el("span", { class: "tl-dot" }), el("div", { class: "tl-head" }, el("span", { class: "tl-title" }, phaseLabel(p)))));
@@ -751,15 +785,19 @@ function logsView(t) {
     el("table", { class: "logs" }, el("thead", {}, el("tr", {}, el("th", {}, "Time"), el("th", {}, "Level"), el("th", {}, "Event"))), body), count);
 }
 
-async function drawDetail(force) {
+async function drawDetail(force, pushed) {
   if (!openId) return;
-  let data;
-  try { data = await api(`/api/tickets/${encodeURIComponent(openId)}`); } catch (e) { $("detail").replaceChildren(el("div", { class: "error" }, e.message)); return; }
+  let data = pushed;
+  if (data === undefined) {
+    try { data = await api(`/api/tickets/${encodeURIComponent(openId)}`); } catch (e) { $("detail").replaceChildren(el("div", { class: "error" }, e.message)); return; }
+  }
+  if (data.ticket?.id !== openId) return; // pushed for a ticket you have left
   // Redraw only when something changed: no flicker, and animations stay for real changes.
   const sig = `${detailTab}:${JSON.stringify(data)}`;
   if (!force && (sig === lastSig || launching)) return; // a countdown on the Approve button keeps its panel
   lastSig = sig;
   const t = data.ticket;
+  detailFiles = data.files;
   const live = isLive(t);
   const steps = t.steps || [];
   const box = [];
@@ -939,6 +977,7 @@ const revisionSeen = new Map();
 /** Open the reader on `name`, with `names` as its tabs (the spec and the plan, or every file). */
 function openDoc(ticket, files, names, name) {
   reader = { ticket, files, names, name };
+  $("doc-approve").resetHold?.();
   drawDoc();
   const dialog = $("doc");
   if (!dialog.open) dialog.showModal();
@@ -951,9 +990,13 @@ function drawDoc() {
   $("doc-tabs").replaceChildren(...(names.length > 1 ? names : []).map((n) => el("button", { role: "tab", "aria-selected": String(n === name), class: n === name ? "on" : "", onclick: () => { reader.name = n; drawDoc(); replay($("doc-content"), "view-in"); $("doc-content").parentElement.scrollTop = 0; } }, n)));
   // Keep the text in place while the popover is open: a redraw would drop the selection.
   if ($("suggest").hidden) {
-    $("doc-content").replaceChildren(...(/\.md$/.test(name) ? markdown(text) : [el("pre", {}, text)]));
-    drawDiagrams($("doc-content"));
+    const draft = liveDraft(ticket, name);
+    const shown = draft ?? text;
+    $("doc-content").replaceChildren(...(/\.md$/.test(name) ? markdown(shown) : [el("pre", {}, shown)]));
+    $("doc-content").classList.toggle("writing", draft !== null);
+    if (draft === null) drawDiagrams($("doc-content")); // a half-written diagram is shown as its code
   }
+  drawLiveBanner();
   const waiting = ticket.state === "waiting_approval";
   const editable = waiting && /^(spec|plan)\.md$/.test(name);
   $("doc-foot").hidden = !waiting;
@@ -1058,6 +1101,101 @@ $("suggest-send").addEventListener("click", (e) => {
     flash(ask.file === "spec.md" ? "Sent: the spec writer changes spec.md, then the planner updates plan.md" : "Sent: the planner changes plan.md");
   });
 });
+// ---- live preview: spec.md or plan.md while its agent writes it ----
+// The step's event stream carries each tool call as the model writes it (its start, then argument
+// deltas by path). A write call's content is the file being typed; an edit call's new text is shown
+// applied to the saved file. When the call ends, the saved file takes over.
+let live = null; // { ticketId, step, file, calls: Map, source, done }
+const docFor = (role) => (role === "plan" ? "plan.md" : "spec.md");
+function appendAt(obj, path, delta) {
+  let o = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    const k = path[i];
+    if (o[k] === null || typeof o[k] !== "object") o[k] = typeof path[i + 1] === "number" ? [] : {};
+    o = o[k];
+  }
+  const last = path[path.length - 1];
+  o[last] = (typeof o[last] === "string" ? o[last] : "") + delta;
+}
+/** The text of `file` as the agent is writing it now, or null when no call is writing it. */
+function liveDraft(ticket, file) {
+  if (!live || live.ticketId !== ticket?.id || live.file !== file) return null;
+  for (const call of [...live.calls.values()].reverse()) {
+    const a = call.args || {};
+    const path = String(a.path || a.file_path || "");
+    if (!(path === file || path.endsWith(`/${file}`))) continue;
+    if (call.name === "write" && typeof a.content === "string") return a.content;
+    if (call.name === "edit" && Array.isArray(a.edits)) {
+      let text = reader.files[file] || "";
+      for (const e of a.edits) if (e && typeof e.oldText === "string" && e.oldText && text.includes(e.oldText)) text = text.replace(e.oldText, typeof e.newText === "string" ? e.newText : "");
+      return text;
+    }
+  }
+  return null;
+}
+function drawLiveBanner() {
+  const box = $("doc-live");
+  if (!live || live.ticketId !== reader.ticket?.id || reader.name !== live.file || live.done) { box.replaceChildren(); return; }
+  const writing = liveDraft(reader.ticket, live.file) !== null;
+  box.replaceChildren(el("div", { class: `doc-live${writing ? "" : " idle"}` },
+    writing ? inPhase(el("span", { class: "live-dot" }), 2000) : null,
+    el("span", {}, writing ? `${live.step.name} is writing ${live.file}: live` : `${live.step.name} is working (reading the code, thinking). ${live.file} appears here as it is written.`)));
+}
+let liveFrame = 0;
+function drawLive() {
+  if (liveFrame) return;
+  liveFrame = setTimeout(() => {
+    liveFrame = 0;
+    if (!$("doc").open || !live || reader.name !== live.file || !$("suggest").hidden) return drawLiveBanner();
+    const body = $("doc-content").parentElement;
+    const follow = body.scrollHeight - body.scrollTop - body.clientHeight < 120; // at the bottom: follow the writing
+    const draft = liveDraft(reader.ticket, live.file);
+    const text = draft ?? reader.files[live.file] ?? "";
+    $("doc-content").replaceChildren(...markdown(text));
+    $("doc-content").classList.toggle("writing", draft !== null);
+    if (draft === null) drawDiagrams($("doc-content"));
+    drawLiveBanner();
+    if (follow) body.scrollTop = body.scrollHeight;
+  }, 120);
+}
+async function refreshLiveFiles() {
+  if (!live) return;
+  try {
+    const data = await api(`/api/tickets/${encodeURIComponent(live.ticketId)}`);
+    if (reader.ticket?.id === data.ticket.id) { reader.ticket = data.ticket; reader.files = data.files; }
+    const step = data.ticket.steps.find((x) => x.name === live?.step.name);
+    if (live && step && step.status !== "running") live.done = true;
+  } catch { /* the next event or refresh tries again */ }
+  drawLive();
+}
+function stopLive() { live?.source.close(); live = null; }
+/** Open the reader on the spec or plan of a step; live while the step runs. */
+function openStepDoc(t, step, files) {
+  const file = docFor(step.role);
+  const names = ["spec.md", "plan.md"].filter((n) => files[n] || n === file);
+  stopLive();
+  if (step.status === "running") {
+    live = { ticketId: t.id, step, file, calls: new Map(), source: null, done: false };
+    const source = new EventSource(`/api/tickets/${encodeURIComponent(t.id)}/events?conversation=${step.conversationId}`);
+    live.source = source;
+    source.onmessage = (m) => {
+      if (!live || live.source !== source) return;
+      const e = JSON.parse(m.data);
+      if (e.type === "snapshot") for (const c of e.calls || []) live.calls.set(c.index, { name: c.name, args: structuredClone(c.args || {}) });
+      else if (e.type === "delta") for (const c of e.calls || []) {
+        if (c.type === "call_start") live.calls.set(c.index, { name: c.name, args: structuredClone(c.args || {}) });
+        else { const call = live.calls.get(c.index); if (call) appendAt(call.args, c.path, c.delta); }
+      }
+      else if (e.type === "tool_end") { live.calls.clear(); refreshLiveFiles(); return; } // the file is on disk now
+      else if (e.type === "run_end") { live.calls.clear(); refreshLiveFiles(); return; }
+      drawLive();
+    };
+  }
+  openDoc(t, files, names, file);
+  const body = $("doc-content").parentElement;
+  if (live) body.scrollTop = body.scrollHeight;
+}
+$("doc").addEventListener("close", stopLive);
 $("doc-close").addEventListener("click", () => $("doc").close());
 $("doc").addEventListener("click", (e) => { if (e.target === $("doc")) $("doc").close(); }); // the backdrop
 $("doc-copy").addEventListener("click", async () => { try { await navigator.clipboard.writeText(reader.files[reader.name] || ""); flash(`${reader.name} copied`); } catch { flash("copy failed: the browser refused the clipboard", true); } });
@@ -1083,10 +1221,16 @@ function holdToApprove(button, ticket, note, after) {
     button.setAttribute("aria-disabled", "true");
     show(el("span", { class: "rocket", "aria-hidden": "true" }, "🚀"), el("span", { class: "count" }, "Lessgoo!!"));
     api(`/api/tickets/${t.id}/approve`, { note: note() })
-      .then(() => { noteDrafts.delete(t.id); flash(`${t.cid} approved: the build starts 🚀`); after?.(); })
-      .catch((e) => flash(e.message, true))
-      .finally(() => setTimeout(() => { going = false; launching = null; button.classList.remove("go"); button.removeAttribute("aria-disabled"); idle(); refresh(); }, 1100));
+      .then(() => {
+        // Approved: the button stays approved until the panel shows the build (it never goes back).
+        noteDrafts.delete(t.id);
+        flash(`${t.cid} approved: the build starts 🚀`);
+        setTimeout(() => { show(el("span", { class: "count" }, "Approved ✓")); launching = null; refresh(); after?.(); }, 700);
+      })
+      .catch((e) => { flash(e.message, true); going = false; launching = null; button.classList.remove("go"); button.removeAttribute("aria-disabled"); idle(); });
   };
+  // The reader's button lives on: a new reader starts it fresh.
+  button.resetHold = () => { if (!timer) { going = false; button.classList.remove("go", "holding"); button.removeAttribute("aria-disabled"); idle(); } };
   const start = (e) => {
     if (timer || going || button.disabled) return;
     e.preventDefault();
@@ -1135,21 +1279,42 @@ function drawUsage(u) {
 }
 
 // ---- refresh ----
+// Never redraw under your cursor: a steer or an approval note you are typing stays.
+const typing = () => document.activeElement && $("detail").contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+function applyOverview(data) {
+  overview = data;
+  PHASE_LABEL = Object.fromEntries((overview.phases || []).map((p) => [p.phase, p.label]));
+  drawUsage(overview.usage);
+  drawSentry(); drawRuns(); drawSprint();
+  $("status").textContent = `${streamOk ? "live" : "updated"} ${new Date().toLocaleTimeString()}`;
+}
+/** Fetch everything now (after an action, or while the stream is down). */
 async function refresh() {
   try {
-    overview = await api("/api/overview");
-    PHASE_LABEL = Object.fromEntries((overview.phases || []).map((p) => [p.phase, p.label]));
-    drawUsage(overview.usage);
-    drawSentry(); drawRuns(); drawSprint();
-    // Never redraw under your cursor: a steer or an approval note you are typing stays.
-    const typing = document.activeElement && $("detail").contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
-    if (openId && !typing) await drawDetail(false);
-    $("status").textContent = `updated ${new Date().toLocaleTimeString()}`;
+    applyOverview(await api("/api/overview"));
+    if (openId && !typing()) await drawDetail(false);
   } catch (e) { flash(e.message, true); }
 }
+// The state stream: the server pushes the overview, and the open ticket, the moment they change.
+// While it is down (a restart), the browser polls every 5 s; EventSource reconnects by itself.
+let stream = null, streamFor = null, streamOk = false;
+function connect() {
+  const want = openId || "";
+  if (stream && streamFor === want) return;
+  stream?.close();
+  streamFor = want;
+  stream = new EventSource(`/api/stream${want ? `?ticket=${encodeURIComponent(want)}` : ""}`);
+  stream.addEventListener("overview", (m) => { streamOk = true; applyOverview(JSON.parse(m.data)); });
+  stream.addEventListener("ticket", (m) => {
+    const data = JSON.parse(m.data);
+    if (data.ticket && data.ticket.id === openId && !typing()) drawDetail(false, data);
+  });
+  stream.onerror = () => { streamOk = false; };
+}
 refresh();
+connect();
 loadSprint(false);
-setInterval(refresh, 5000);
+setInterval(() => { if (!streamOk) refresh(); }, 5000);
 setInterval(() => tab === "sprint" && loadSprint(false), 60000);
 </script>
 </body>
