@@ -39,6 +39,14 @@ export function nextPage(link: string | null): string | null {
 	return null;
 }
 
+/** The issues query: each comma-separated environment and each project (an id) is a parameter of its own. */
+export function issuesUrl(config: Config["sentry"]): string {
+	const query = new URLSearchParams({ query: config.query, statsPeriod: config.period, limit: "100", sort: "freq" });
+	for (const environment of config.environment.split(",").map((e) => e.trim()).filter((e) => e !== "")) query.append("environment", environment);
+	for (const project of config.projects) query.append("project", project);
+	return `${config.url}/api/0/organizations/${encodeURIComponent(config.org)}/issues/?${query}`;
+}
+
 export class SentryClient implements SentryApi {
 	private readonly config: Config["sentry"];
 	constructor(config: Config["sentry"]) {
@@ -51,10 +59,7 @@ export class SentryClient implements SentryApi {
 	}
 
 	async issues() {
-		const query = new URLSearchParams({ query: this.config.query, statsPeriod: this.config.period, limit: "100", sort: "freq" });
-		query.append("environment", this.config.environment);
-		for (const project of this.config.projects) query.append("project", project);
-		let url: string | null = `${this.config.url}/api/0/organizations/${encodeURIComponent(this.config.org)}/issues/?${query}`;
+		let url: string | null = issuesUrl(this.config);
 		const issues: SentryIssue[] = [];
 		for (let page = 0; url !== null && page < this.config.maxPages; page++) {
 			const response: { data: SentryIssue[]; headers: Headers } = await requestJson<SentryIssue[]>("GET", url, { headers: this.headers() });
