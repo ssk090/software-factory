@@ -1,6 +1,6 @@
 ---
 name: judge
-skills: code-review, pstack/principle-prove-it-works
+skills: code-review
 ---
 # Agent: judge
 

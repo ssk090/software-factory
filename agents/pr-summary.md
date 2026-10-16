@@ -1,6 +1,6 @@
 ---
 name: pr-summary
-skills: pr, git-pr-summary, pstack/technical-writing, pstack/unslop
+skills: pr, git-pr-summary
 ---
 # Agent: PR summary writer
 

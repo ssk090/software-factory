@@ -1,6 +1,6 @@
 ---
 name: docs
-skills: domain-modeling, pstack/technical-writing, pstack/unslop
+skills: domain-modeling
 ---
 # Agent: docs writer
 

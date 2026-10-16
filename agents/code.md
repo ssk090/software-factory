@@ -1,6 +1,6 @@
 ---
 name: code
-skills: implement, tdd, ponytail, pstack/principle-prove-it-works, pstack/principle-fix-root-causes
+skills: implement, test-driven-development, systematic-debugging, verification-before-completion, ponytail
 ---
 # Agent: coder
 

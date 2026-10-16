@@ -1,6 +1,6 @@
 ---
 name: test
-skills: tdd, pstack/principle-test-behavior-not-implementation
+skills: test-driven-development, verification-before-completion
 ---
 # Agent: test writer
 

@@ -31,7 +31,7 @@ Each file starts with a header:
     skills: ponytail-review
     ---
 
-- **Skills:** list skill names in `skills:` (comma separated). Use `set/name` for a skill from one vendored set, for example `pstack/blast-radius`. A ticket can add skills with a line `Skills: a, b` in its description. Each skill is looked up in the ticket's repo first (`REPO_SKILL_DIRS`, so a repo's own `review-a` or `tdd` wins), then on `SKILLS_PATH`, copied into the ticket's run folder so a sandboxed agent can read it, and the agent is told to read and follow it. Works the same with every CLI. A missing skill is logged and skipped. Put team skills in `../skills/` so they ship with the factory and the Docker image.
+- **Skills:** list skill names in `skills:` (comma separated). Use `set/name` for a skill from one vendored set, for example `superpowers/test-driven-development`. A ticket can add skills with a line `Skills: a, b` in its description. Each skill is looked up in the ticket's repo first (`REPO_SKILL_DIRS`, so a repo's own `review-a` or `tdd` wins), then on `SKILLS_PATH`, copied into the ticket's run folder so a sandboxed agent can read it, and the agent is told to read and follow it. Works the same with every CLI. A missing skill is logged and skipped. Put team skills in `../skills/` so they ship with the factory and the Docker image.
 - **Change an agent:** edit its file.
 - **Turn off the docs agent:** delete `docs.md`.
 - **Change which models an agent uses:** edit `../durable/lanes.json`.

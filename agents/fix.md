@@ -1,6 +1,6 @@
 ---
 name: fix
-skills: tdd, diagnosing-bugs, receiving-code-review, pstack/principle-fix-root-causes, pstack/principle-prove-it-works
+skills: receiving-code-review, test-driven-development, systematic-debugging, verification-before-completion, ponytail
 ---
 # Agent: fixer
 

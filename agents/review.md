@@ -1,6 +1,6 @@
 ---
 name: review
-skills: review-a, code-review, codebase-design, ponytail-review, pstack/blast-radius
+skills: review-a, code-review, codebase-design, ponytail-review
 ---
 # Agent: code reviewer
 

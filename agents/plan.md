@@ -1,6 +1,6 @@
 ---
 name: plan
-skills: codebase-design, writing-plans, pstack/principle-sequence-verifiable-units, pstack/principle-subtract-before-you-add
+skills: codebase-design, writing-plans
 ---
 # Agent: planner
 
@@ -14,6 +14,8 @@ Do this:
    - For each acceptance criterion (AC-1, AC-2, ...): the test that will prove it (file, test name, kind: unit / integration / e2e) and the code to change.
    - Files to change, in order.
    - How to run the tests (the exact command).
+   - A "Diagram" section with one Mermaid flowchart in a ```mermaid code block: each acceptance criterion, the test that proves it, and the files that change, in the order of the work. At most 15 nodes.
+   Write it in Simplified Technical English (the rules follow below).
 3. Use the smallest complete change. No new dependencies. No extra scope.
 
 Reply with one short line when done.
