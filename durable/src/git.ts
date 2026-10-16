@@ -109,7 +109,8 @@ export async function prepareWorktree(repo: string, base: string, branch: string
 		await rm(worktree, { recursive: true, force: true });
 		await git(repo, "worktree", "prune");
 		await mkdir(join(worktree, ".."), { recursive: true });
-		await gitOk(repo, "worktree", "add", "-q", "--no-track", "-B", branch, worktree, `origin/${base}`);
+		// Fully qualified: a local branch that happens to be named origin/<base> must not make it ambiguous.
+		await gitOk(repo, "worktree", "add", "-q", "--no-track", "-B", branch, worktree, `refs/remotes/origin/${base}`);
 		return "new";
 	});
 }
@@ -232,7 +233,7 @@ export function cellEnv(options: { cid: string; slot: number; hooksDir: string; 
 
 /** The spec tests: files the test writer added or changed, frozen by content hash. */
 export async function freezeTests(worktree: string, base: string): Promise<Record<string, string>> {
-	const files = (await gitOk(worktree, "diff", "--name-only", "--diff-filter=d", `origin/${base}...HEAD`)).split("\n").filter(Boolean);
+	const files = (await gitOk(worktree, "diff", "--name-only", "--diff-filter=d", `refs/remotes/origin/${base}...HEAD`)).split("\n").filter(Boolean);
 	const frozen: Record<string, string> = {};
 	for (const file of files) frozen[file] = await gitOk(worktree, "hash-object", file);
 	return frozen;
