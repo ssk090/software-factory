@@ -1,6 +1,6 @@
 // The agents (examples 15-system-prompt, 27-plan-mode, 28-reviewer, and the Hooks section): every
 // step conversation runs the coding tools with the factory's preamble and a guard hook. The role's
-// instructions are the prompt itself, built from agents/<role>.md exactly as factory.sh built it.
+// instructions are the prompt itself, built from agents/<role>.md, its skills, and the Isolation and Context lines.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineExtension, hook, section, ToolTask } from "@earendil-works/pi-durable";

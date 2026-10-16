@@ -1,5 +1,5 @@
-// The tracker: ClickUp (API v2). The same operations tracker/clickup.sh had, plus the sprint view
-// and creating tickets from Sentry issues. `Tracker` is the seam: tests pass a fake.
+// The tracker: ClickUp (API v2). Ticket status, comments and fetch for the pipeline, the sprint
+// view, and creating tickets from Sentry issues. `Tracker` is the seam: tests pass a fake.
 import type { Config } from "./config.ts";
 import { requestJson } from "./http.ts";
 
@@ -90,7 +90,7 @@ export class ClickUp implements Tracker {
 	}
 
 	async resolve(ref: string): Promise<string> {
-		// The last path segment of a URL, without query or fragment (as tracker/clickup.sh did).
+		// The last path segment of a URL, without query or fragment.
 		const key = (ref.trim().split("/").at(-1) ?? "").split(/[?#]/)[0] ?? "";
 		if (!/^[A-Za-z0-9_-]+$/.test(key)) throw new Error(`not a ticket key, id or URL: ${ref}`);
 		// A custom id (CHP-1234) is looked up in the team; a plain id is the id.

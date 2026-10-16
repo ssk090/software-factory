@@ -1,6 +1,6 @@
 // Which model each agent role runs on: an ordered chain per role, preferred first (durable/lanes.json).
 // A step whose model fails moves to the next model in its chain. The reviewer and the judge never use
-// the coder's model family, so code is never graded by its author (router.py's rule).
+// the coder's model family, so code is never graded by its author.
 import { readFile } from "node:fs/promises";
 import type { Models } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";

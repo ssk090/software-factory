@@ -1,5 +1,5 @@
 // The durable pipeline end to end, with no network: scratch repo, fake tracker and git host, faux
-// models playing the agents. Mirrors tests/e2e.sh.
+// models playing the agents.
 //   cd durable && npm test
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";

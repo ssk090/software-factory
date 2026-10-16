@@ -1,4 +1,2 @@
-# The config file and adapters are sourced from paths chosen at run time.
+# config.env is sourced from a path chosen at run time.
 disable=SC1090
-# "VAR= cmd" runs cmd with VAR empty, on purpose (step's AGENT_AUTH= AGENT_ENV= PROMPT=).
-disable=SC1007

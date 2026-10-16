@@ -1,4 +1,4 @@
-// Skills for an agent step (as factory.sh delivered them): the agent file's `skills:` header plus
+// Skills for an agent step: the agent file's `skills:` header plus
 // the ticket's `Skills:` line. Each is looked up in the ticket's repo first (REPO_SKILL_DIRS), then
 // on SKILLS_PATH, copied into RUN/skills so a sandboxed agent can read it, and named in the prompt.
 import { appendFile, cp, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";

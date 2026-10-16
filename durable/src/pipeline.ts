@@ -1,5 +1,5 @@
-// The ticket pipeline as one durable task (examples 12-tasks, 13-recovery, 24-child-tasks): the
-// stages factory.sh ran, as phases that each save a checkpoint. A restarted factory continues every
+// The ticket pipeline as one durable task (examples 12-tasks, 13-recovery, 24-child-tasks): its
+// stages are phases that each save a checkpoint. A restarted factory continues every
 // ticket from its last checkpoint. Each agent step is a conversation owned by this task (examples
 // 03-owned-conversations, 22-subagent-foreground, 23-subagent-background), created in the same commit
 // as the checkpoint that records it, and its prompt is submitted with a request ID: a restart finds the
@@ -154,7 +154,7 @@ export function createPipeline(deps: PipelineDeps) {
 			if (entering) Object.assign(checkpoint, { step: null, stepHead: null });
 			await editTicket(tx, task.input.ticketId, (ticket) => {
 				ticket.phase = checkpoint.phase;
-				// Where a later run continues if this one is stopped or blocked (the journal factory.sh kept).
+				// Where a later run continues if this one is stopped or blocked.
 				if (entering && !SETUP_PHASES.has(checkpoint.phase)) ticket.resume = { ...checkpoint, polls: 0 } as unknown as JsonObject;
 				edit?.(ticket);
 			});

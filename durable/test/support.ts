@@ -1,4 +1,4 @@
-// A scratch world for pipeline tests (like tests/e2e.sh): a repo with an origin, a fake tracker and
+// A scratch world for pipeline tests: a repo with an origin, a fake tracker and
 // git host, and pi-ai's faux model playing every agent from its prompt.
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";

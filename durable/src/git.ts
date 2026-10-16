@@ -137,7 +137,7 @@ const HOOKS = [
 const sq = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
 /**
- * RUN/git-hooks, the ticket guard (as cell.sh wrote it): reference-transaction refuses any ref change
+ * RUN/git-hooks, the ticket guard: reference-transaction refuses any ref change
  * except the ticket's own branch. Every other hook, and the guard once it allows a change, runs the
  * repo's own hook, so husky and similar keep working.
  */

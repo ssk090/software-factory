@@ -17,7 +17,7 @@ jobs:
           cache: npm
           cache-dependency-path: durable/package-lock.json
       - name: shellcheck
-        run: shellcheck -S warning factory.sh docker-entrypoint.sh durable/bin/ff
+        run: shellcheck -S warning docker-entrypoint.sh durable/bin/ff
       - name: git identity for the scratch repos
         run: git config --global user.name ci && git config --global user.email ci@localhost && git config --global init.defaultBranch main
       - name: install

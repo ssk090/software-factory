@@ -150,7 +150,7 @@ Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover
 - **Steer:** your message joins the running step after its current tool round.
 
 ## Commands
-`ff` is `durable/bin/ff` (an old `ff` link to `factory.sh` still works). It sources `config.env`.
+`ff` is `durable/bin/ff`: link it onto your PATH (see Setup). It sources `config.env`.
 
     ff serve                   the factory and its dashboard
     ff spec <ticket>           plan the spec, then wait for your approval
@@ -203,8 +203,7 @@ No network: a scratch repo with an origin, a fake tracker and git host, and pi-a
 
 ## Known limits
 - **Pi Durable is experimental:** its API may change between releases. Versions are pinned in `durable/package-lock.json`; upgrade on purpose and run the tests.
-- **Models through API keys:** agents run on pi-ai with providers' API keys (metered). The agent CLIs of earlier versions (Codex, Claude Code, OpenCode, Cursor, pi) and their subscription quotas are not used.
+- **Models through API keys:** agents run on pi-ai with providers' API keys (metered), not through agent CLIs or their subscription quotas.
 - **Tracker:** ClickUp only. **Git host:** GitHub only, through `gh`.
 - **One process per session:** run one `ff serve` per data folder (it refuses a second one).
 - **`SANDBOX=none`:** file tools are confined to the worktree and run folder, but an agent's shell can read the rest of the machine. Use docker for untrusted tickets.
-- **Not carried over from the bash version:** the terminal live view and Herdr panes, the MySQL run database and OpenTelemetry export (the dashboard and the session replace them), and quota-based routing. They are in git history before this change.

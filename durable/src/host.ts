@@ -165,7 +165,7 @@ export class Factory {
 			if (ticket.taskId !== null && (await tx.task(ticket.taskId as TaskId))?.state.status !== "terminal") {
 				return { ticketId, taskId: ticket.taskId, started: false };
 			}
-			// A ticket whose last run finished (its PR is in review) starts over, as factory.sh did.
+			// A ticket whose last run finished (its PR is in review) starts over.
 			const run = ticket.state === "in_review" ? { ...input, fresh: true } : input;
 			const taskId = await tx.createTask(Pipeline, run, { ownership: { kind: "conversation" }, background: true });
 			Object.assign(ticket, { taskId, state: "queued", phase: "queued", blocked: null, mode: input.build ? "build" : "full" });
