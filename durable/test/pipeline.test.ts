@@ -3,13 +3,14 @@
 //   cd durable && npm test
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { TaskId } from "@earendil-works/pi-durable";
 import type { Ticket } from "../src/docs.ts";
 import { Factory, type HostDeps } from "../src/host.ts";
+import { readLessons } from "../src/lessons.ts";
 import { FakeGitHost, FakeTracker, fauxAgents, lanes, scratchRepo, testConfig, type Behaviour } from "./support.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -91,10 +92,7 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			await factory.start("T-2", { gate: true });
 			await waitFor(async () => (await factory.ticket("T-2"))?.state === "waiting_approval", "the gate");
 			assert.equal(w.tracker.status.get("T-2"), "spec review");
-			// The spec and the plan are on the ticket as .md files before you approve.
-			assert.match(w.tracker.attached.get("T-2/T-2-spec.md") ?? "", /AC-1: it works/);
-			assert.match(w.tracker.attached.get("T-2/T-2-plan.md") ?? "", /plan: AC-1/);
-			assert.ok((await factory.ticket("T-2"))!.events.some((e) => e.text === "Attached T-2-spec.md to the ticket"));
+			assert.equal(w.tracker.log.filter((l) => l.startsWith("attach ")).length, 0, "nothing is attached before you approve");
 			await new Promise((r) => setTimeout(r, 300)); // it keeps waiting
 			assert.equal((await factory.ticket("T-2"))?.state, "waiting_approval");
 			await factory.approve("T-2", "use pnpm");
@@ -102,7 +100,12 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			assert.equal(t.state, "in_review", t.blocked ?? "");
 			assert.match(await readFile(join(t.run!, "comments.md"), "utf8"), /\[approval note\] use pnpm/);
 			assert.ok(w.tracker.log.includes("comment T-2 Approved: use pnpm"));
-			assert.equal(w.tracker.log.filter((l) => l.startsWith("attach ")).length, 2, "each attached once");
+			// The approved spec and plan are on the ticket, once each.
+			assert.deepEqual(w.tracker.log.filter((l) => l.startsWith("attach ")), ["attach T-2 T-2-spec.md", "attach T-2 T-2-plan.md"]);
+			assert.match(w.tracker.attached.get("T-2/T-2-spec.md") ?? "", /AC-1: it works/);
+			assert.match(w.tracker.attached.get("T-2/T-2-plan.md") ?? "", /plan: AC-1/);
+			assert.ok(t.events.some((e) => e.text === "Attached T-2-spec.md to the ticket"));
+			assert.ok(t.attachedApproval !== null && t.attachedApproval === t.approved?.at);
 			assert.ok(coderSaw.length > 0);
 		} finally {
 			await factory.close();
@@ -143,11 +146,13 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			assert.match(await readFile(join(t.run!, "spec.md"), "utf8"), /AC-2: the list can be empty/);
 			assert.match(await readFile(join(t.run!, "plan.md"), "utf8"), /AC-2 -> ac2\.test/, "the planner followed the spec");
 			assert.ok(t.events.some((e) => e.text === "spec.md revised, and plan.md updated to match"), t.events.map((e) => e.text).join("\n"));
-			assert.equal(w.tracker.log.filter((l) => l === "attach T-17 T-17-spec.md").length, 2, "the new spec is attached again");
+			assert.equal(w.tracker.log.filter((l) => l.startsWith("attach ")).length, 0, "a changed but unapproved spec is not attached");
 			assert.deepEqual(t.steps.map((s) => s.name), ["spec-1-1", "plan-1-1"], "the same agents, no new steps");
 			await factory.approve("T-17");
 			t = await settle(factory, "T-17");
 			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.match(w.tracker.attached.get("T-17/T-17-spec.md") ?? "", /AC-2: the list can be empty/, "the approved, changed spec is attached");
+			assert.equal(w.tracker.log.filter((l) => l === "attach T-17 T-17-spec.md").length, 1);
 			await assert.rejects(factory.revise("T-17", { file: "spec.md", quote: "", comment: "late" }), /not waiting for your approval/);
 		} finally {
 			await factory.close();
@@ -408,6 +413,141 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			await assert.rejects(factory.resume("T-14"), /daily budget reached.*raise DAILY_BUDGET_USD/);
 			await factory.stop("T-14");
 			assert.equal((await settle(factory, "T-14")).paused, null, "stopping clears the pause");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("calls the coordinator when the repo's pre-push hook refuses the push: it fixes the branch, the push runs again, and its lesson is kept", async () => {
+		const w = await world({ coordinator: "commit-fixed" });
+		// The repo's pre-push hook: the check passes only when fixed.txt is on the branch.
+		await writeFile(join(w.repo, ".git", "hooks", "pre-push"), "#!/bin/sh\ngit ls-tree -r --name-only HEAD | grep -qx fixed.txt && exit 0\necho 'check:typescript: error TS2322 in src/a.ts' >&2\nexit 1\n");
+		await chmod(join(w.repo, ".git", "hooks", "pre-push"), 0o755);
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-20", { gate: false });
+			const t = await settle(factory, "T-20");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.steps.some((s) => s.name === "coordinate-1-1" && s.status === "done"), t.steps.map((s) => s.name).join(" "));
+			assert.match(await readFile(join(t.run!, "failure-1.md"), "utf8"), /error TS2322 in src\/a\.ts/, "the coordinator got the hook's output");
+			const texts = t.events.map((e) => e.text);
+			assert.ok(texts.some((x) => /^Coordinator called \(1\/2 for "Open the PR"\): git push was refused/.test(x)), texts.join("\n"));
+			assert.ok(texts.some((x) => /^Coordinator: The pre-push check wanted fixed\.txt; added it\. "Open the PR" runs again/.test(x)));
+			assert.match(w.git(w.repo, "ls-remote", "origin").toString(), /refs\/heads\/feature\/T-20\//, "the branch was pushed after the repair");
+			// Self-improving: the lesson reaches the next agents that change code.
+			assert.match(await readLessons(w.config.stateDir, "code"), /Run the pre-push checks before you finish\. \(T-20, /);
+			assert.equal(await readLessons(w.config.stateDir, "review"), "", "only the roles that change code read lessons");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("stops a push that would send a secret: the coordinator takes it out of every unpushed commit, and the remote never sees it", async () => {
+		const token = `ghp_${"Rk7Qm2Zt9Lx4Vb8Nc1Hd6Jf3Pw5Sy0Gu2Ea7"}`;
+		const w = await world({ coderFile: ["leak.ts", `export const token = "${token}";`], coordinator: "remove-leak" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-21", { gate: false });
+			const t = await settle(factory, "T-21");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			const failure = await readFile(join(t.run!, "failure-1.md"), "utf8");
+			assert.match(failure, /leak\.ts:1: github-token/);
+			assert.ok(!failure.includes(token), "the failure report never holds the secret");
+			const sent = w.git(w.repo, "log", "-p", "--all", "--format=%B", `origin/${t.branch}`).toString();
+			assert.ok(!sent.includes(token), "no pushed commit holds the token");
+			assert.ok(t.events.some((e) => /possible secret/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("blocks the ticket with the coordinator's reason when it cannot or must not fix the failure", async () => {
+		const w = await world({ coordinator: "give-up" });
+		await writeFile(join(w.repo, ".git", "hooks", "pre-push"), "#!/bin/sh\necho 'storybook: error TS2345' >&2\nexit 1\n");
+		await chmod(join(w.repo, ".git", "hooks", "pre-push"), 0o755);
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-22", { gate: false });
+			const t = await settle(factory, "T-22");
+			assert.equal(t.state, "blocked");
+			assert.match(t.blocked ?? "", /^pr: the coordinator could not fix it: develop already fails this check/);
+			assert.equal(t.steps.filter((s) => s.role === "coordinate").length, 1, "no second repair after a deliberate stop");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("does not take a VERIFY_CMD killed on the base (out of memory) for a red base: the gate stays on", async () => {
+		// Killed on the base (no file.txt yet), passes after the coder. No coordinator here (MAX_REPAIRS=0).
+		const w = await world({}, { VERIFY_CMD: "test -f file.txt || { echo 'tsc --noEmit: Command was killed with SIGKILL'; exit 1; }", MAX_REPAIRS: "0" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-23", { gate: false });
+			const t = await settle(factory, "T-23");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.events.some((e) => /^VERIFY_CMD was killed on main \(out of memory or SIGKILL, verify-1\.log\): no result, so the gate stays on/.test(e.text)));
+			assert.ok(!t.events.some((e) => /already fails VERIFY_CMD/.test(e.text)), "not reported as a red base");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("hands a check killed for memory to the coordinator, which finds a way to run the same check that fits, and the factory keeps it", async () => {
+		const w = await world({ coordinator: "verify-concurrency" }, { VERIFY_CMD: "sh check.sh" });
+		// The repo's check: killed (out of memory) unless it runs one task at a time.
+		await writeFile(join(w.repo, "check.sh"), '[ "$1" = "--concurrency=1" ] && exit 0\necho "tsc: Command was killed with SIGKILL (Forced termination)"\nexit 1\n');
+		w.git(w.repo, "add", "check.sh");
+		w.git(w.repo, "commit", "-qm", "the check");
+		w.git(w.repo, "push", "-q", "origin", "main");
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-24", { gate: false });
+			const t = await settle(factory, "T-24");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.steps.some((s) => s.name === "coordinate-1-1"), t.steps.map((s) => s.name).join(" "));
+			assert.ok(t.events.some((e) => e.text.startsWith("VERIFY_CMD now runs as: sh check.sh --concurrency=1")), t.events.map((e) => e.text).join("\n"));
+			assert.deepEqual(t.verify.map((v) => [v.round, v.ok]), [[1, true], [2, true], [4, true]], "the base and the code were really checked");
+			assert.equal(JSON.parse(await readFile(join(w.config.stateDir, "verify.json"), "utf8")).command, "sh check.sh --concurrency=1");
+			assert.match(await readLessons(w.config.stateDir, "code"), /--concurrency=1/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("hands a coder that gave up for the environment to the coordinator, which finishes its work without running the coder again", async () => {
+		const w = await world({ coderGivesUp: "The sandbox container stopped: every bash call fails, so I cannot commit. The change is done in the worktree.", coordinator: "finish-coder" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-26", { gate: false });
+			const t = await settle(factory, "T-26");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.deepEqual(t.steps.filter((s) => s.role === "code" || s.role === "coordinate").map((s) => s.name), ["code-1-1", "coordinate-1-1"], "the coder's step is kept, not run again");
+			assert.match(await readFile(join(t.run!, "failure-1.md"), "utf8"), /- Kind: blocked[\s\S]*The sandbox container stopped/);
+			assert.match(w.git(t.worktree!, "log", "--format=%s", "-5").toString(), /code \(the coordinator finished it\)/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("starts the build the moment you approve, not at the gate's next poll", async () => {
+		const w = await world();
+		const factory = await Factory.open({ ...w.deps, gatePollMs: 60_000 });
+		try {
+			await factory.start("T-25", { gate: true });
+			await waitFor(async () => (await factory.ticket("T-25"))?.state === "waiting_approval", "the gate");
+			const approved = Date.now();
+			await factory.approve("T-25");
+			await waitFor(async () => (await factory.ticket("T-25"))?.state === "running", "the build", 5000);
+			assert.ok(Date.now() - approved < 5000, "woken, not polled");
+			await factory.stop("T-25");
+			await settle(factory, "T-25");
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });

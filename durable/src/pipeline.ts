@@ -32,7 +32,9 @@ import {
 import type { Config } from "./config.ts";
 import { addEvent, type Revision, StepDoc, type StepRecord, type StepUsage, type Ticket, TicketDoc, type TicketEvent, TicketIndex } from "./docs.ts";
 import { type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
-import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, testsKept, writeGuardHooks } from "./git.ts";
+import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, run, testsKept, writeGuardHooks } from "./git.ts";
+import { learn, learnedVerify, learnVerify, readLessons } from "./lessons.ts";
+import { formatFindings, redact, scanBranch } from "./secrets.ts";
 import type { GitHost } from "./github.ts";
 import { family, type Lanes, modelName, pickModel } from "./lanes.ts";
 import { buildPrompt, hasRole, STEP_EXTENSIONS } from "./roles.ts";
@@ -67,7 +69,7 @@ export type PipelineInput = {
 type Step = { role: string; round: number; attempt: number; conversationId: number; model: string; started: number };
 type Phase =
 	| "start" | "admit" | "fetch" | "worktree" | "spec" | "plan" | "post-spec" | "gate" | "setup" | "verify-base"
-	| "test" | "code" | "verify-code" | "docs" | "pr-summary" | "pr" | "review" | "fix" | "pr-summary-2" | "judge" | "report";
+	| "test" | "code" | "verify-code" | "docs" | "pr-summary" | "pr" | "review" | "fix" | "push-fix" | "pr-summary-2" | "judge" | "report";
 export type Checkpoint = {
 	phase: Phase;
 	/** The running agent step, or null between steps. */
@@ -84,6 +86,10 @@ export type Checkpoint = {
 	polls: number;
 	setupDone: boolean;
 	freshDone: boolean;
+	/** The coordinator is repairing a failure of this phase (its step is `coordinate-<n>`); the phase runs again after. */
+	repair?: { n: number; phase: Phase; kind: string; resume?: Step | null } | null;
+	/** Repairs so far in this run, per phase (MAX_REPAIRS each). */
+	repairs?: Record<string, number>;
 };
 export type PipelineResult = { outcome: "in_review" | "draft" | "waiting" | "needs_input" | "blocked"; pr: string | null; reason: string | null };
 
@@ -107,6 +113,7 @@ export const PHASES: readonly { phase: Phase; label: string }[] = [
 	{ phase: "pr", label: "Open the PR" },
 	{ phase: "review", label: "Review" },
 	{ phase: "fix", label: "Fix review findings" },
+	{ phase: "push-fix", label: "Push the fixes" },
 	{ phase: "pr-summary-2", label: "Update the PR summary" },
 	{ phase: "judge", label: "Judge" },
 	{ phase: "report", label: "Report" },
@@ -147,10 +154,27 @@ const initial = (): Checkpoint => ({
 	polls: 0,
 	setupDone: false,
 	freshDone: false,
+	repair: null,
+	repairs: {},
 });
 
 /** Thrown inside a phase: the ticket is blocked with this reason (posted, status S_BLOCKED). */
 class Blocked extends Error {}
+/**
+ * A failure a code change may fix (a check that fails on the branch, a refused push, a secret the
+ * scan found): the coordinator gets it with `details`, then the phase runs again (MAX_REPAIRS).
+ */
+class Repairable extends Blocked {
+	readonly kind: string;
+	readonly details: string;
+	constructor(kind: string, message: string, details: string) {
+		super(message);
+		this.kind = kind;
+		this.details = details;
+	}
+}
+/** A check that did not finish: killed by the system (out of memory) rather than failing. */
+const KILLED = /\bSIGKILL\b|\bKilled\b|JavaScript heap out of memory|\bENOMEM\b|out of memory|exit code 137\b/i;
 
 const exists = (path: string) => stat(path).then(() => true, () => false);
 const readText = (path: string) => readFile(path, "utf8").catch(() => "");
@@ -172,6 +196,7 @@ const OUTPUTS: Record<string, (round: number) => string[]> = {
 	review: (round) => [`review-${round}.md`],
 	fix: () => [],
 	judge: () => ["judge.json"],
+	coordinate: (round) => [`repair-${round}.md`, "blocked.md"],
 };
 /** Phases every run goes through before it continues where the last one stopped. */
 const SETUP_PHASES = new Set<Phase>(["start", "admit", "fetch", "worktree"]);
@@ -184,6 +209,25 @@ const RUN_OUTPUTS = [
 export function createPipeline(deps: PipelineDeps) {
 	const { config, tracker, gitHost, lanes, models } = deps;
 	const gatePollMs = deps.gatePollMs ?? 5000;
+	// A waiting phase (the gate, a pause, the queue) sleeps until its next poll or until it is woken:
+	// an approval, a continue or a free slot takes effect at once, not at the next poll.
+	const wakers = new Map<string, Set<() => void>>();
+	const wake = (ticketId?: string) => {
+		for (const [id, set] of wakers) if (ticketId === undefined || id === ticketId) for (const done of [...set]) done();
+	};
+	const nap = (ms: number, signal: AbortSignal, ticketId: string) =>
+		new Promise<void>((resolve) => {
+			const set = wakers.get(ticketId) ?? new Set<() => void>();
+			wakers.set(ticketId, set);
+			const done = () => {
+				clearTimeout(timer);
+				set.delete(done);
+				resolve();
+			};
+			const timer = setTimeout(done, ms);
+			signal.addEventListener("abort", done, { once: true });
+			set.add(done);
+		});
 	const admitPollMs = deps.admitPollMs ?? 10_000;
 
 	type R = TaskRuntime<PipelineInput, Checkpoint, PipelineResult, object>;
@@ -214,6 +258,7 @@ export function createPipeline(deps: PipelineDeps) {
 			return { status: "running", checkpoint };
 		}, context);
 	const finish = async (task: T, runtime: R, context: Context, result: PipelineResult, edit: Edit) => {
+		setTimeout(() => wake(), 0); // the slot frees with this commit: queued tickets look now
 		// The ticket's sandbox container goes with its run (a later run makes a new one).
 		const name = container(await ticketOf(task, runtime, context));
 		if (name !== null) await removeContainer(name);
@@ -252,12 +297,38 @@ export function createPipeline(deps: PipelineDeps) {
 		}, context);
 	const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+	/** Text the factory posts outside (PR, tracker): every secret it holds becomes [redacted], and the log says so. */
+	const scrub = async (runtime: R, context: Context, ticket: Ticket, label: string, text: string): Promise<string> => {
+		const out = redact(text);
+		if (out.count > 0) await note(runtime, context, ticket.id, { kind: "guard", level: "warn", text: `Redacted ${out.count} possible secret(s) from ${label} before posting it` });
+		return out.text;
+	};
+	/**
+	 * Push the ticket's branch, with the guardrails: first the secret scan of everything the push would
+	 * send (new lines, new files, commit messages), then git push, which runs the repo's pre-push hooks.
+	 * Either failure goes to the coordinator.
+	 */
+	const pushSafely = async (ticket: Ticket) => {
+		const tracking = `refs/remotes/origin/${ticket.branch}`;
+		const since = (await git(ticket.worktree!, "rev-parse", "-q", "--verify", tracking)).code === 0 ? tracking : `refs/remotes/origin/${config.base}`;
+		const findings = await scanBranch(ticket.worktree!, since);
+		if (findings.length > 0) {
+			throw new Repairable("secrets", `the push stopped: the secret scan found ${findings.length} possible secret(s) in what it would send`, `SINCE=${since}\n\n${formatFindings(findings)}`);
+		}
+		try {
+			await push(ticket.worktree!, ticket.branch!);
+		} catch (error) {
+			throw new Repairable("push", "git push was refused (the repo's pre-push hooks, or the remote)", message(error));
+		}
+	};
+
 	/** A comment on the ticket, at most once per key (memo first: a crash loses it, never doubles it). */
 	const commentOnce = async (runtime: R, context: Context, ticket: Ticket, key: string, text: string, always = false) => {
 		if (!(always || config.trackerComments)) return;
 		if ((await runtime.memo<boolean>(`comment:${key}`, context)) !== undefined) return;
 		await runtime.memo(`comment:${key}`, true, context);
-		const failed = await tracker.comment(ticket.id, text.slice(0, 30_000)).then(() => null, (error: unknown) => message(error));
+		const clean = await scrub(runtime, context, ticket, "a ticket comment", text);
+		const failed = await tracker.comment(ticket.id, clean.slice(0, 30_000)).then(() => null, (error: unknown) => message(error));
 		if (failed !== null) log(ticket, `comment failed: ${failed}`);
 		const first = text.split("\n")[0]!.slice(0, 120);
 		await note(runtime, context, ticket.id, failed === null ? { kind: "tracker", text: `Comment posted on the ticket: ${first}` } : { kind: "tracker", level: "warn", text: `Comment failed: ${failed}` });
@@ -269,7 +340,8 @@ export function createPipeline(deps: PipelineDeps) {
 		if ((await runtime.memo<boolean>(key, context)) !== undefined) return;
 		await runtime.memo(key, true, context);
 		const name = `${ticket.cid}-${file}`;
-		const failed = await tracker.attach(ticket.id, name, content).then(() => null, (error: unknown) => message(error));
+		const clean = await scrub(runtime, context, ticket, name, content);
+		const failed = await tracker.attach(ticket.id, name, clean).then(() => null, (error: unknown) => message(error));
 		if (failed !== null) log(ticket, `attach ${name} failed: ${failed}`);
 		await note(runtime, context, ticket.id, failed === null ? { kind: "tracker", text: `Attached ${name} to the ticket` } : { kind: "tracker", level: "warn", text: `Attaching ${name} failed: ${failed}` });
 	};
@@ -304,17 +376,24 @@ export function createPipeline(deps: PipelineDeps) {
 	 * verify <round>: the factory runs VERIFY_CMD itself and does not take an agent's word. Round 1 is
 	 * the untouched base branch; when that already fails the gate only reports.
 	 */
-	const verify = async (ticket: Ticket, round: number, baselineRed: boolean, context: Context): Promise<boolean> => {
-		if (!config.verifyCmd) return true;
-		const code = await exec(ticket, config.verifyCmd, `verify-${round}.log`, context);
+	const verify = async (ticket: Ticket, round: number, baselineRed: boolean, context: Context): Promise<{ ok: boolean; killed: boolean; tail: string }> => {
+		if (!config.verifyCmd) return { ok: true, killed: false, tail: "" };
+		const code = await exec(ticket, await verifyCommand(), `verify-${round}.log`, context);
 		const failed = join(ticket.run!, "verify-failed.md");
+		const tail = (await readText(join(ticket.run!, `verify-${round}.log`))).split("\n").slice(-120).join("\n");
+		// Killed (out of memory, SIGKILL) is no result at all: never a red base, and not the code's fault.
+		const killed = code !== 0 && KILLED.test(tail);
 		if (code === 0 || baselineRed) await rm(failed, { force: true });
 		else {
-			const tail = (await readText(join(ticket.run!, `verify-${round}.log`))).split("\n").slice(-80).join("\n");
-			await writeFile(failed, `The factory ran VERIFY_CMD (${config.verifyCmd}) on HEAD ${(await head(ticket.worktree!)).slice(0, 12)} and it failed (exit ${code}). Last lines:\n\n\`\`\`\n${tail}\n\`\`\`\n`);
+			await writeFile(failed, `The factory ran VERIFY_CMD (${config.verifyCmd}) on HEAD ${(await head(ticket.worktree!)).slice(0, 12)} and it failed (exit ${code}). Last lines:\n\n\`\`\`\n${tail.split("\n").slice(-80).join("\n")}\n\`\`\`\n`);
 		}
-		return code === 0;
+		return { ok: code === 0, killed, tail };
 	};
+	const KILLED_HELP = `give the sandbox more memory (SANDBOX_ARGS="--memory 8g", and Docker's own memory limit) or lower the check's parallelism, then Run again`;
+	/** VERIFY_CMD, or the way to run it that the coordinator found fits this machine. */
+	const verifyCommand = async () => (await learnedVerify(config.stateDir, config.verifyCmd)) ?? config.verifyCmd;
+	/** The coordinator can still take a failure of this phase. */
+	const canRepair = async (task: T, phase: Phase) => config.maxRepairs > 0 && ((task.state.checkpoint.repairs ?? {})[phase] ?? 0) < config.maxRepairs && (await hasRole(config.here, "coordinate"));
 
 	/**
 	 * Start the next attempt of a step: pick its model (the first usable one in the role's lane that
@@ -386,6 +465,7 @@ export function createPipeline(deps: PipelineDeps) {
 			here: config.here, role: step.role, round: step.round, cid: ticket.cid, branch, base: config.base, run, worktree, pr: ticket.pr,
 			verifyCmd: config.verifyCmd, portBase: config.cellPortStart + (ticket.slot ?? 0) * config.cellPortSpan,
 			portSpan: config.cellPortSpan, repoSkillDirs: config.repoSkillDirs, skillsPath: config.skillsPath,
+			lessons: await readLessons(config.stateDir, step.role),
 			log: (line) => log(ticket, line),
 		});
 		const submission = await handle.submit({ type: "input", content: prompt, requestId: `step:${name}` }, context);
@@ -534,7 +614,6 @@ export function createPipeline(deps: PipelineDeps) {
 				? { kind: "gate", text: `${rev.file} revised${rev.file === "spec.md" ? ", and plan.md updated to match" : ""}` }
 				: { kind: "gate", level: "error", text: `The change to ${rev.file} failed: ${error}` });
 		});
-		if (error === null) for (const file of files) await attachOnce(runtime, context, ticket, file, await readText(join(ticket.run!, file)), `r${rev.id}`);
 	};
 
 	const readOnly = async (ticket: Ticket, stepHead: string | null, label: string) => {
@@ -595,7 +674,7 @@ export function createPipeline(deps: PipelineDeps) {
 				});
 				return { status: "running", checkpoint: { ...checkpoint, phase: "fetch", polls: 0 } };
 			}, context);
-			if (!admitted) await sleep(admitPollMs, runtime.signal);
+			if (!admitted) await nap(admitPollMs, runtime.signal, task.input.ticketId);
 		},
 		fetch: async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
@@ -666,8 +745,11 @@ export function createPipeline(deps: PipelineDeps) {
 			const ticket = await ticketOf(task, runtime, context);
 			const spec = await readText(join(ticket.run!, "spec.md"));
 			const plan = await readText(join(ticket.run!, "plan.md"));
-			await attachOnce(runtime, context, ticket, "spec.md", spec);
-			await attachOnce(runtime, context, ticket, "plan.md", plan);
+			// With the gate, the versions you approve are attached (setup); without it, these are final.
+			if (!task.input.gate) {
+				await attachOnce(runtime, context, ticket, "spec.md", spec);
+				await attachOnce(runtime, context, ticket, "plan.md", plan);
+			}
 			await commentOnce(runtime, context, ticket, "spec", `SPEC\n\n${spec}\n\nPLAN\n\n${plan}`);
 			if (task.input.gate) {
 				await setStatus(runtime, context, ticket, config.statuses.specReview);
@@ -705,7 +787,7 @@ export function createPipeline(deps: PipelineDeps) {
 			}
 			if (ticket.approved === null) {
 				await advance(task, runtime, context, { polls: polls + 1 });
-				await sleep(gatePollMs, runtime.signal);
+				await nap(gatePollMs, runtime.signal, ticket.id);
 				return;
 			}
 			// Your comments go to the coder: fetch them again.
@@ -719,6 +801,18 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		setup: async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
+			// Every way of approving (dashboard, ff approve, the tracker's status, approving an ended run)
+			// passes here: the spec and plan you approved go onto the ticket, once per approval.
+			if (ticket.approved !== null && ticket.attachedApproval !== ticket.approved.at) {
+				for (const file of ["spec.md", "plan.md"]) await attachOnce(runtime, context, ticket, file, await readText(join(ticket.run!, file)), `approved-${ticket.approved.at}`);
+				const at = ticket.approved.at;
+				await runtime.commit(async (tx) => {
+					await editTicket(tx, ticket.id, (t) => {
+						t.attachedApproval = at;
+					});
+					return undefined;
+				}, context);
+			}
 			if (config.setupCmd && !task.state.checkpoint.setupDone) {
 				const code = await exec(ticket, config.setupCmd, "setup.log", context);
 				if (code !== 0) throw new Blocked(`SETUP_CMD failed (exit ${code}), see setup.log`);
@@ -727,12 +821,20 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		"verify-base": async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
-			const ok = await verify(ticket, 1, false, context);
-			if (!ok) log(ticket, `origin/${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block`);
-			await advance(task, runtime, context, { phase: "test", baselineRed: !ok }, (t) => {
+			const { ok, killed, tail } = await verify(ticket, 1, false, context);
+			// Killed (out of memory): the coordinator finds a way to run the same check that fits.
+			if (killed && (await canRepair(task, "verify-base"))) {
+				throw new Repairable("killed", `VERIFY_CMD was killed on ${config.base} (out of memory or SIGKILL)`, `$ ${await verifyCommand()}\n${tail}`);
+			}
+			// Only a real failure makes the base red; a killed run says nothing, so the gate stays on.
+			const red = !ok && !killed;
+			if (red) log(ticket, `origin/${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block`);
+			await advance(task, runtime, context, { phase: "test", baselineRed: red }, (t) => {
 				if (!config.verifyCmd) return;
 				t.verify.push({ round: 1, ok, log: "verify-1.log" });
-				addEvent(t, ok ? { kind: "verify", text: `VERIFY_CMD passes on ${config.base}` } : { kind: "verify", level: "warn", text: `${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block` });
+				addEvent(t, ok ? { kind: "verify", text: `VERIFY_CMD passes on ${config.base}` }
+					: killed ? { kind: "verify", level: "warn", text: `VERIFY_CMD was killed on ${config.base} (out of memory or SIGKILL, verify-1.log): no result, so the gate stays on. To fix: ${KILLED_HELP}` }
+					: { kind: "verify", level: "warn", text: `${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block` });
 			});
 		},
 		test: async (task, runtime, context) => {
@@ -749,7 +851,9 @@ export function createPipeline(deps: PipelineDeps) {
 			if (!(await runAgent(task, runtime, context, "code", round))) return;
 			const ticket = await ticketOf(task, runtime, context);
 			const blocked = await readText(join(ticket.run!, "blocked.md"));
-			if (blocked.trim() !== "") throw new Blocked(`coder blocked: ${blocked.slice(0, 1500)}`);
+			// The coordinator looks first: a tool or the sandbox that failed works again, and it finishes the
+			// job; a real question about the spec stays a stop.
+			if (blocked.trim() !== "") throw new Repairable("blocked", `coder blocked: ${blocked.slice(0, 1500)}`, blocked);
 			await onBranch(ticket, "coder");
 			await keptTests(ticket, task.state.checkpoint.frozen, "coder");
 			if ((await gitOk(ticket.worktree!, "rev-list", "--count", `refs/remotes/origin/${config.base}..HEAD`)) === "0") throw new Blocked("coder made no commits");
@@ -759,7 +863,9 @@ export function createPipeline(deps: PipelineDeps) {
 			const ticket = await ticketOf(task, runtime, context);
 			const cp = task.state.checkpoint;
 			const round = cp.round === 1 ? 2 : 3;
-			const ok = await verify(ticket, round, cp.baselineRed, context);
+			const { ok, killed, tail } = await verify(ticket, round, cp.baselineRed, context);
+			if (killed && (await canRepair(task, "verify-code"))) throw new Repairable("killed", `VERIFY_CMD was killed (out of memory or SIGKILL, verify-${round}.log)`, `$ ${await verifyCommand()}\n${tail}`);
+			if (killed) throw new Blocked(`VERIFY_CMD was killed (out of memory or SIGKILL, verify-${round}.log): ${KILLED_HELP}`);
 			const record = (t: Ticket) => {
 				if (!config.verifyCmd) return;
 				t.verify.push({ round, ok, log: `verify-${round}.log` });
@@ -771,7 +877,7 @@ export function createPipeline(deps: PipelineDeps) {
 				// The coder gets one more fresh session with the failure (verify-failed.md).
 				await advance(task, runtime, context, { phase: "code", round: 2 }, record);
 			} else {
-				throw new Blocked("VERIFY_CMD still fails after the coder's second try, see verify-3.log");
+				throw new Repairable("verify", "VERIFY_CMD still fails after the coder's second try, see verify-3.log", `$ ${config.verifyCmd}\n${tail}`);
 			}
 		},
 		docs: async (task, runtime, context) => {
@@ -791,11 +897,12 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		pr: async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
-			await push(ticket.worktree!, ticket.branch!);
+			await pushSafely(ticket);
 			let pr = ticket.pr ?? (await gitHost.prFor(ticket.worktree!, ticket.branch!));
 			if (pr === null) {
-				const title = (await readText(join(ticket.run!, "pr-title.txt"))).trim();
-				pr = await gitHost.createDraft(ticket.worktree!, config.base, ticket.branch!, title, await readText(join(ticket.run!, "pr-body.md")));
+				const title = await scrub(runtime, context, ticket, "the PR title", (await readText(join(ticket.run!, "pr-title.txt"))).trim());
+				const body = await scrub(runtime, context, ticket, "the PR body", await readText(join(ticket.run!, "pr-body.md")));
+				pr = await gitHost.createDraft(ticket.worktree!, config.base, ticket.branch!, title, body);
 				if (config.prLabel) await gitHost.addLabel(ticket.worktree!, pr, config.prLabel).catch((e) => log(ticket, `label: ${e instanceof Error ? e.message : e}`));
 			}
 			log(ticket, `PR ${pr}`);
@@ -815,7 +922,7 @@ export function createPipeline(deps: PipelineDeps) {
 			const verdict = /^VERDICT: (PASS|FIX)$/m.exec(review.split("\n").filter((l) => /^VERDICT: (PASS|FIX)$/.test(l)).at(-1) ?? "")?.[1] === "PASS" ? "PASS" : "FIX";
 			if ((await runtime.memo<boolean>(`pr-comment:review-${round}`, context)) === undefined) {
 				await runtime.memo(`pr-comment:review-${round}`, true, context);
-				await gitHost.comment(ticket.worktree!, ticket.pr!, review).catch((e) => log(ticket, `review comment: ${e instanceof Error ? e.message : e}`));
+				await gitHost.comment(ticket.worktree!, ticket.pr!, await scrub(runtime, context, ticket, `review ${round}`, review)).catch((e) => log(ticket, `review comment: ${e instanceof Error ? e.message : e}`));
 			}
 			const last = verdict === "PASS" || round >= config.maxReviewRounds;
 			await advance(task, runtime, context, { phase: last ? (task.state.checkpoint.fixed ? "pr-summary-2" : "judge") : "fix", step: null, verdict }, (t) => {
@@ -831,13 +938,19 @@ export function createPipeline(deps: PipelineDeps) {
 			await onBranch(ticket, "fixer");
 			await keptTests(ticket, task.state.checkpoint.frozen, "fixer");
 			// A failure goes to the next reviewer as verify-failed.md, who must count it as a P1.
-			const ok = await verify(ticket, 3 + round, task.state.checkpoint.baselineRed, context);
-			await push(ticket.worktree!, ticket.branch!);
-			await advance(task, runtime, context, { phase: "review", round: round + 1, step: null, fixed: true }, (t) => {
-				addEvent(t, { kind: "git", text: `Fixes pushed to ${ticket.branch}` });
+			const { ok } = await verify(ticket, 3 + round, task.state.checkpoint.baselineRed, context);
+			await advance(task, runtime, context, { phase: "push-fix", step: null, fixed: true }, (t) => {
 				if (!config.verifyCmd) return;
 				t.verify.push({ round: 3 + round, ok, log: `verify-${3 + round}.log` });
 				addEvent(t, { kind: "verify", level: ok ? "info" : "warn", text: `VERIFY_CMD ${ok ? "passes" : "fails"} after fix ${round} (verify-${3 + round}.log)` });
+			});
+		},
+		"push-fix": async (task, runtime, context) => {
+			// Its own phase: a refused push goes to the coordinator, and only the push runs again.
+			const ticket = await ticketOf(task, runtime, context);
+			await pushSafely(ticket);
+			await advance(task, runtime, context, { phase: "review", round: task.state.checkpoint.round + 1, step: null }, (t) => {
+				addEvent(t, { kind: "git", text: `Fixes pushed to ${ticket.branch}` });
 			});
 		},
 		"pr-summary-2": async (task, runtime, context) => {
@@ -846,7 +959,10 @@ export function createPipeline(deps: PipelineDeps) {
 			const ticket = await ticketOf(task, runtime, context);
 			const title = (await readText(join(ticket.run!, "pr-title.txt"))).trim();
 			const body = await readText(join(ticket.run!, "pr-body.md"));
-			if (title && body.trim()) await gitHost.edit(ticket.worktree!, ticket.pr!, title, body).catch((e) => log(ticket, `PR edit: ${e instanceof Error ? e.message : e}`));
+			if (title && body.trim()) {
+				const [t, b] = [await scrub(runtime, context, ticket, "the PR title", title), await scrub(runtime, context, ticket, "the PR body", body)];
+				await gitHost.edit(ticket.worktree!, ticket.pr!, t, b).catch((e) => log(ticket, `PR edit: ${e instanceof Error ? e.message : e}`));
+			}
 			await advance(task, runtime, context, { phase: "judge", step: null });
 		},
 		judge: async (task, runtime, context) => {
@@ -863,7 +979,7 @@ export function createPipeline(deps: PipelineDeps) {
 					await writeFile(join(ticket.run!, "judge.txt"), text);
 					if ((await runtime.memo<boolean>("pr-comment:judge", context)) === undefined) {
 						await runtime.memo("pr-comment:judge", true, context);
-						await gitHost.comment(ticket.worktree!, ticket.pr!, text).catch(() => undefined);
+						await gitHost.comment(ticket.worktree!, ticket.pr!, await scrub(runtime, context, ticket, "the judge's comment", text)).catch(() => undefined);
 					}
 				}
 			} catch (error) {
@@ -891,18 +1007,114 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 	};
 
+	/**
+	 * Call the coordinator for a Repairable failure: the failure goes to RUN_DIR/failure-<n>.md, and the
+	 * checkpoint records the repair. False when MAX_REPAIRS for this phase are used (the ticket blocks).
+	 */
+	const startRepair = async (task: T, runtime: R, context: Context, phase: Phase, error: Repairable): Promise<boolean> => {
+		if (config.maxRepairs <= 0 || !(await hasRole(config.here, "coordinate"))) return false;
+		const cp = task.state.checkpoint;
+		const repairs = cp.repairs ?? {};
+		const tries = (repairs[phase] ?? 0) + 1;
+		if (tries > config.maxRepairs) return false;
+		const n = Object.values(repairs).reduce((a, b) => a + b, 0) + 1;
+		const ticket = await ticketOf(task, runtime, context);
+		const base = ticket.verify.find((v) => v.round === 1);
+		const baseCheck = !config.verifyCmd ? "no VERIFY_CMD is set"
+			: base === undefined ? "not run yet"
+			: base.ok ? `VERIFY_CMD (${config.verifyCmd}) passed on ${config.base}`
+			: cp.baselineRed ? `VERIFY_CMD (${config.verifyCmd}) already failed on ${config.base} before this ticket (verify-1.log)`
+			: `VERIFY_CMD (${config.verifyCmd}) did not finish on ${config.base} (killed, verify-1.log): no result`;
+		const did = error.kind === "push" ? `git push origin HEAD:refs/heads/${ticket.branch} (this runs the repo's pre-push hooks on the branch)`
+			: error.kind === "secrets" ? "the factory's secret scan of everything the push would send: added lines, added files, commit messages"
+			: error.kind === "blocked" ? `the coder (${cp.step ? `${cp.step.role}-${cp.step.round}-${cp.step.attempt}` : "the step"}) stopped and wrote blocked.md (below). Its work, committed or not, is in the worktree`
+			: error.kind === "killed" ? `VERIFY_CMD in the sandbox: ${await verifyCommand()}${config.verifyCmd !== (await verifyCommand()) ? ` (the learned way to run ${config.verifyCmd})` : ""}. It was killed by the system before it finished: no result. The sandbox has the memory Docker gives it${config.sandboxArgs.length ? ` (SANDBOX_ARGS: ${config.sandboxArgs.join(" ")})` : " (no SANDBOX_ARGS limit)"}`
+			: `VERIFY_CMD: ${await verifyCommand()}`;
+		const earlier = Array.from({ length: n - 1 }, (_, i) => `failure-${i + 1}.md, repair-${i + 1}.md`).join("; ") || "none";
+		const tracking = `refs/remotes/origin/${ticket.branch}`;
+		const since = (await git(ticket.worktree!, "rev-parse", "-q", "--verify", tracking)).code === 0 ? tracking : `refs/remotes/origin/${config.base}`;
+		const output = redact(error.details).text.split("\n").slice(-200).join("\n");
+		// The memory the sandbox really has: a heap limit (--max-old-space-size) must stay well below it.
+		const name = container(ticket);
+		let memory = "";
+		if (name !== null && (error.kind === "killed" || error.kind === "blocked" || error.kind === "verify")) {
+			const limit = Number((await run("docker", ["inspect", "-f", "{{.HostConfig.Memory}}", name])).stdout.trim()) || 0;
+			const total = Number((await run("docker", ["info", "--format", "{{.MemTotal}}"])).stdout.trim()) || 0;
+			const gb = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GB`;
+			if (limit || total) memory = `- Sandbox memory: ${limit ? gb(limit) : `no limit of its own; Docker has ${gb(total)} for everything`}. Keep any Node heap (--max-old-space-size) well below it.`;
+		}
+		await writeFile(join(ticket.run!, `failure-${n}.md`), [
+			`# Failure ${n}: ${label(phase)}`,
+			"",
+			`- Kind: ${error.kind}`,
+			`- Phase: ${phase} (${label(phase)}); this is try ${tries} of ${config.maxRepairs} for it`,
+			`- What failed: ${error.message}`,
+			`- What the factory ran: ${did}`,
+			`- Ticket: ${ticket.cid}, branch ${ticket.branch}, HEAD ${(await head(ticket.worktree!)).slice(0, 12)}`,
+			`- BASE: refs/remotes/origin/${config.base}`,
+			`- SINCE (what the remote already has): ${since}`,
+			`- The base before this ticket: ${baseCheck}`,
+			`- Earlier repairs in this run: ${earlier}`,
+			...(memory ? [memory] : []),
+			"",
+			"## Output",
+			"",
+			"```",
+			output,
+			"```",
+			"",
+		].join("\n"));
+		// The phase's own finished step (the coder's) is kept: after the repair it is not run again.
+		await advance(task, runtime, context, { repair: { n, phase, kind: error.kind, resume: cp.step }, repairs: { ...repairs, [phase]: tries }, step: null }, (t) => {
+			addEvent(t, { kind: "repair", level: "warn", text: `Coordinator called (${tries}/${config.maxRepairs} for "${label(phase)}"): ${error.message}` });
+		});
+		return true;
+	};
+	/** The coordinator's step, then its checks; the failed phase runs again after it. */
+	const coordinate = async (task: T, runtime: R, context: Context) => {
+		const rep = task.state.checkpoint.repair!;
+		if (!(await runAgent(task, runtime, context, "coordinate", rep.n))) return;
+		const ticket = await ticketOf(task, runtime, context);
+		await onBranch(ticket, "coordinator");
+		if (Object.keys(task.state.checkpoint.frozen ?? {}).length > 0) await keptTests(ticket, task.state.checkpoint.frozen, "coordinator");
+		const report = await readText(join(ticket.run!, `repair-${rep.n}.md`));
+		const lesson = report.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("LESSON:")).at(-1)?.slice(7).trim() ?? "";
+		if (lesson !== "" && !/^none\.?$/i.test(lesson)) {
+			const kept = await learn(config.stateDir, lesson, ticket.cid);
+			if (kept !== null) await note(runtime, context, ticket.id, { kind: "lesson", text: `Lesson for the next agents: ${kept}` });
+		}
+		// A killed check: the coordinator names a way to run the same check that fits (VERIFY: <command>).
+		const proposed = report.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("VERIFY:")).at(-1)?.slice(7).trim().replace(/^`|`$/g, "") ?? "";
+		if (proposed !== "" && config.verifyCmd) {
+			const problem = await learnVerify(config.stateDir, config.verifyCmd, proposed, ticket.cid);
+			await note(runtime, context, ticket.id, problem === null
+				? { kind: "lesson", text: `VERIFY_CMD now runs as: ${proposed} (learned by the coordinator; state/verify.json, delete it to go back)` }
+				: { kind: "guard", level: "warn", text: `The coordinator's way to run VERIFY_CMD was refused: ${problem}` });
+		}
+		const blocked = (await readText(join(ticket.run!, "blocked.md"))).trim();
+		if (blocked !== "") throw new Blocked(`the coordinator could not fix it: ${redact(blocked).text.slice(0, 1500)}`);
+		const summary = (report.split("\n").find((l) => l.trim() !== "")?.trim() ?? "no report").replace(/[.\s]+$/, "");
+		await advance(task, runtime, context, { repair: null, step: rep.resume ?? null }, (t) => {
+			addEvent(t, { kind: "repair", text: `Coordinator: ${redact(summary).text.slice(0, 300)}. "${label(rep.phase)}" runs again` });
+		});
+	};
+
 	/** Every phase: a Blocked error (or any other failure) blocks the ticket instead of faulting the task. */
 	const guarded = (phase: Phase): Handler => async (task, runtime, context) => {
 		// Paused: hold before the phase (a waiting phase must commit a changed checkpoint).
 		if ((await ticketOf(task, runtime, context)).paused) {
 			await runtime.commit(async (_tx, current) => ({ status: "running", checkpoint: { ...current.state.checkpoint, polls: current.state.checkpoint.polls + 1 } }), context);
-			await sleep(gatePollMs, runtime.signal);
+			await nap(gatePollMs, runtime.signal, task.input.ticketId);
 			return;
 		}
+		const repairing = Boolean(task.state.checkpoint.repair);
 		try {
-			await phases[phase](task, runtime, context);
+			if (repairing) await coordinate(task, runtime, context);
+			else await phases[phase](task, runtime, context);
 		} catch (error) {
 			if (runtime.signal.aborted) throw error; // stopping or closing: the abort handler or the next run decides
+			// A failure code may fix goes to the coordinator first (never a failure of the coordinator itself).
+			if (error instanceof Repairable && !repairing && (await startRepair(task, runtime, context, phase, error))) return;
 			const ticket = await ticketOf(task, runtime, context);
 			// A deleted ticket: say so plainly, and do not post to it (every call would fail the same way).
 			const gone = error instanceof TicketGone;
@@ -930,7 +1142,8 @@ export function createPipeline(deps: PipelineDeps) {
 		phases: Object.fromEntries((Object.keys(phases) as Phase[]).map((p) => [p, guarded(p)])) as never,
 		// Stop (ff stop, or the dashboard): owned step conversations are aborted first, bottom-up.
 		abort: async (task, runtime, context) => {
-			const container_ = container(await ticketOf(task as T, runtime as R, context));
+			wake(); // a slot is free: queued tickets look now
+		const container_ = container(await ticketOf(task as T, runtime as R, context));
 			if (container_ !== null) await removeContainer(container_);
 			await runtime.commit(async (tx) => {
 				await editTicket(tx, task.input.ticketId, (t) => {
@@ -944,7 +1157,7 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 	});
 
-	return { Pipeline, extension: defineExtension({ name: "factory-pipeline", tasks: [Pipeline] }) };
+	return { Pipeline, extension: defineExtension({ name: "factory-pipeline", tasks: [Pipeline] }), wake };
 }
 
 /**

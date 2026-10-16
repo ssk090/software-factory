@@ -106,6 +106,8 @@ export type Ticket = {
 	resume: JsonObject | null;
 	/** Where the ticket came from, when the factory made it (a Sentry issue). */
 	source: { kind: "sentry"; issueId: string; shortId: string; permalink: string } | null;
+	/** The approval (its time) whose spec.md and plan.md are attached to the tracker's ticket. */
+	attachedApproval?: number | null;
 	/** The tracker no longer has the ticket (deleted): a run cannot go on until it is back or replaced. */
 	gone?: boolean;
 	/** Paused: the pipeline holds at its next phase and its model requests wait. `reason`: "you" or the budget. */

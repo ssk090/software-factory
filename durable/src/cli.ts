@@ -14,6 +14,7 @@ import { GitHubCli } from "./github.ts";
 import { Factory, type HostDeps } from "./host.ts";
 import { requestJson } from "./http.ts";
 import { chain, family, loadLanes, modelName, pickModel } from "./lanes.ts";
+import { learnedVerify, lessons } from "./lessons.ts";
 import { SentryClient } from "./sentry.ts";
 import { type ThrottleStatus, usd } from "./throttle.ts";
 import { startServer } from "./server.ts";
@@ -32,6 +33,7 @@ const USAGE = `usage: ff <command>
   status                     every ticket and what it is doing
   show <ticket>              one ticket: steps, files, PR
   logs <ticket>              everything that happened to a ticket, oldest first
+  lessons                    what the coordinator learned from failures (state/lessons.md)
   usage                      today's model spend and the rate limits
   sentry [sync]              production issues, by Fix first (sync: ask Sentry now)
   fix <sentry issue id>      make a ticket from a Sentry issue and plan its spec
@@ -275,6 +277,8 @@ async function doctor(config: Config) {
 		if (other === null) warn(`${role}: only ${modelName(model)} has a login, the coder's own family (${coder}): set another provider's key so code is reviewed by another family`);
 		else ok(`${role}: ${modelName(other)}`);
 	}
+	const learned = config.verifyCmd ? await learnedVerify(config.stateDir, config.verifyCmd) : null;
+	if (learned) ok(`VERIFY_CMD runs as: ${learned} (learned by the coordinator, state/verify.json)`);
 	const { rpm, tpm, dailyBudgetUsd } = config.limits;
 	const limits = `model limits per provider: ${rpm || "no"} requests/min, ${tpm || "no"} tokens/min; daily budget ${dailyBudgetUsd > 0 ? usd(dailyBudgetUsd) : "none"}`;
 	dailyBudgetUsd > 0 ? ok(limits) : warn(`${limits} (set DAILY_BUDGET_USD to cap spend)`);
@@ -326,6 +330,12 @@ async function main() {
 				console.log(`${when}  ${e.level.padEnd(5)} ${e.kind.padEnd(8)} ${(e.step ?? e.phase).padEnd(14)} ${e.text}`);
 			}
 			return;
+		}
+		case "lessons": {
+			const all = await lessons(config.stateDir);
+			if (all.length === 0) return console.log("no lessons yet: the coordinator adds one when it repairs a failure");
+			for (const l of all) console.log(`- ${l}`);
+			return console.log(`(${join(config.stateDir, "lessons.md")}: edit or delete a line freely)`);
 		}
 		case "usage": {
 			const u = (await call<{ usage: ThrottleStatus }>(config, "/api/overview")).usage;

@@ -76,12 +76,15 @@ export class Factory {
 	readonly deps: HostDeps;
 	readonly throttle: Throttle;
 	private readonly Pipeline: ReturnType<typeof createPipeline>["Pipeline"];
+	/** Wake a ticket's waiting phase (the gate, a pause, the queue) now. */
+	private readonly wake: (ticketId?: string) => void;
 	private readonly lock: string | null;
 	private budgetTimer: ReturnType<typeof setInterval> | null = null;
 	/** Provider session id -> ticket id, for the throttle (filled as steps are looked up). */
 	private readonly sessions = new Map<string, string>();
 
-	private constructor(harness: Harness, root: Conversation, deps: HostDeps, Pipeline: Factory["Pipeline"], lock: string | null, throttle: Throttle) {
+	private constructor(harness: Harness, root: Conversation, deps: HostDeps, Pipeline: Factory["Pipeline"], lock: string | null, throttle: Throttle, wake: (ticketId?: string) => void) {
+		this.wake = wake;
 		this.harness = harness;
 		this.root = root;
 		this.deps = deps;
@@ -107,7 +110,7 @@ export class Factory {
 			hold: (sessionId) => factory?.holdReason(sessionId) ?? Promise.resolve(null),
 		});
 		const models = throttle.wrap(deps.models);
-		const { Pipeline, extension } = createPipeline({
+		const { Pipeline, extension, wake } = createPipeline({
 			config, tracker: deps.tracker, gitHost: deps.gitHost, lanes: deps.lanes, models, envFor, identity, log,
 			gatePollMs: deps.gatePollMs, admitPollMs: deps.admitPollMs,
 		});
@@ -141,7 +144,7 @@ export class Factory {
 			context,
 		);
 		const root = await harness.root(context);
-		factory = new Factory(harness, root, deps, Pipeline, lock, throttle);
+		factory = new Factory(harness, root, deps, Pipeline, lock, throttle, wake);
 		if (!deps.readOnly) {
 			// Commands a crashed factory left running would race the resumed agents: end them first.
 			for (const ticket of await factory.tickets()) {
@@ -216,6 +219,7 @@ export class Factory {
 			ticket.updated = Date.now();
 			addEvent(ticket, { kind: "gate", text: `Spec approved${note.trim() ? `, with a note for the coder: ${note.trim().slice(0, 200)}` : ""}` });
 		}, context);
+		this.wake(ticketId); // the gate sees it now, not at its next poll
 		await this.deps.tracker.setStatus(ticketId, this.deps.config.statuses.approved).catch(() => undefined);
 		const after = (await this.ticket(ticketId))!;
 		// An approval for a ticket that is not waiting (its run ended at the gate earlier): build it now.
@@ -263,6 +267,7 @@ export class Factory {
 			revisions.push({ id: String(revisions.length + 1), file: input.file as "spec.md" | "plan.md", quote: input.quote.slice(0, 4000), comment: comment.slice(0, 4000), status: "queued", at: Date.now(), ended: null, error: null });
 			addEvent(t, { kind: "gate", text: `Change asked on ${input.file}: ${comment.slice(0, 200)}` });
 		});
+		this.wake(ticketId);
 		return (await this.ticket(ticketId))!;
 	}
 
@@ -338,6 +343,7 @@ export class Factory {
 			addEvent(t, { kind: t.paused.reason === BUDGET ? "budget" : "control", text: `Continued by ${by} after ${duration(held)}` });
 			t.paused = null;
 		});
+		this.wake(ticketId);
 		return (await this.ticket(ticketId))!;
 	}
 

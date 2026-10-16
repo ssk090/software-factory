@@ -120,7 +120,7 @@ export class FakeGitHost implements GitHost {
 
 export const lanes: Lanes = {
 	lanes: { spec: ["faux/faux-1"], code: ["faux/faux-1"], review: ["faux/other-1"] },
-	aliases: { plan: "spec", test: "code", docs: "code", "pr-summary": "code", fix: "code", judge: "review" },
+	aliases: { plan: "spec", test: "code", docs: "code", "pr-summary": "code", fix: "code", judge: "review", coordinate: "code" },
 };
 
 const text = (message: Message | undefined) =>
@@ -139,6 +139,12 @@ export type Behaviour = {
 	onReview?: (messages: readonly Message[]) => void;
 	/** The spec writer first writes prose that breaks Simplified Technical English. */
 	badSpec?: boolean;
+	/** The coder also commits this file (path, content): to leak a secret, say. */
+	coderFile?: [string, string];
+	/** The coordinator: commit the file the pre-push hook wants, take a leaked file out of every unpushed commit, or give up. */
+	coordinator?: "commit-fixed" | "remove-leak" | "give-up" | "verify-concurrency" | "finish-coder";
+	/** The coder does the work but does not commit, and writes this into blocked.md. */
+	coderGivesUp?: string;
 };
 
 /**
@@ -186,11 +192,33 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 		if (prompt.includes("# Agent: test writer")) {
 			return bash(`echo "test AC-1" > ac1.test && git add ac1.test && git commit -qm "test: AC-1 (red)" && echo "AC-1 -> ac1.test" > ${run}/tests.md`);
 		}
+		if (prompt.includes("# Agent: coder") && behaviour.coderGivesUp) {
+			return bash(`echo code >> file.txt; echo ${JSON.stringify(behaviour.coderGivesUp)} > ${run}/blocked.md`);
+		}
 		if (prompt.includes("# Agent: coder")) {
 			const escape = "{ git update-ref refs/heads/main HEAD; git branch other-ticket; git tag v-agent; } >" + `${run}/escape.log 2>&1;`;
-			const extra = round === 1 && behaviour.coder ? `${behaviour.coder}; ` : "";
+			const leak = behaviour.coderFile ? `printf '%s\\n' ${JSON.stringify(behaviour.coderFile[1])} > ${behaviour.coderFile[0]} && git add ${behaviour.coderFile[0]}; ` : "";
+			const extra = (round === 1 && behaviour.coder ? `${behaviour.coder}; ` : "") + leak;
 			const pause = behaviour.coderSleep ? `touch ${run}/coder-started; sleep ${behaviour.coderSleep}; ` : "";
 			return bash(`${escape} ${extra}${pause}echo "port $PORT_BASE token \${CLICKUP_TOKEN:-none} $([ -f /.dockerenv ] && echo container || echo host)" > ${run}/cell.txt; echo code >> file.txt && git add file.txt && git commit -qm "code"`);
+		}
+		if (prompt.includes("# Agent: coordinator")) {
+			const n = round;
+			const report = (first: string, lesson: string) => `printf '%s\\n\\n%s\\n' ${JSON.stringify(first)} ${JSON.stringify(`LESSON: ${lesson}`)} > ${run}/repair-${n}.md`;
+			if (behaviour.coordinator === "finish-coder") {
+				return bash(`git add file.txt && git commit -qm "code (the coordinator finished it)" && ${report("The coder lost its shell before it could commit; the work was done, so it is committed now.", "none")}`);
+			}
+			if (behaviour.coordinator === "verify-concurrency") {
+				return bash(`printf '%s\\n\\nVERIFY: sh check.sh --concurrency=1\\nLESSON: %s\\n' "The check ran out of memory with every task at once; one at a time it finishes." "Run check.sh with --concurrency=1 in the sandbox." > ${run}/repair-${n}.md`);
+			}
+			if (behaviour.coordinator === "give-up") {
+				return bash(`echo "develop already fails this check in another package: fix it there first" > ${run}/blocked.md; ${report("The base already fails the check; not this ticket's bug.", "none")}`);
+			}
+			if (behaviour.coordinator === "remove-leak") {
+				const since = "$(grep -o 'SINCE[^:]*: [^ ]*' " + `${run}/failure-${n}.md | head -1 | sed 's/.*: //')`;
+				return bash(`git reset -q --soft ${since} && git rm -q --cached leak.ts && rm -f leak.ts && git commit -qm "code without the leaked token" && ${report("Removed a hard-coded token from every unpushed commit.", "Read tokens from the environment, never from source.")}`);
+			}
+			return bash(`echo ok > fixed.txt && git add fixed.txt && git commit -qm "fix: the pre-push check" && ${report("The pre-push check wanted fixed.txt; added it.", "Run the pre-push checks before you finish.")}`);
 		}
 		if (prompt.includes("# Agent: docs writer")) return write(`${run}/docs.md`, "No docs change needed\n");
 		if (prompt.includes("# Agent: PR summary")) return bash(`echo "title ${round}" > ${run}/pr-title.txt && echo body > ${run}/pr-body.md`);

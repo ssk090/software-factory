@@ -5,7 +5,7 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { Factory } from "../src/host.ts";
-import { startServer } from "../src/server.ts";
+import { _test, startServer } from "../src/server.ts";
 import { FakeGitHost, FakeTracker, fauxAgents, here, lanes, scratchRepo, testConfig } from "./support.ts";
 
 describe("server", { timeout: 60_000 }, () => {
@@ -101,6 +101,36 @@ describe("server", { timeout: 60_000 }, () => {
 		assert.equal(overview.usage.limits.rpm, 50);
 		assert.ok(overview.usage.today.total.requests > 0, "the agents' requests were counted");
 		assert.equal((await post("/api/tickets/T-9/pause", {})).status, 409, "a stopped ticket cannot pause");
+	});
+
+	it("streams a tool call as the model writes it: the start, each argument delta, and the call in flight for a late viewer", () => {
+		const { compact } = _test;
+		const update = compact({ type: "message_update", changes: [
+			{ type: "toolcall_start", contentIndex: 1, block: { type: "toolCall", id: "c1", name: "write", arguments: { path: "/run/spec.md" } } },
+			{ type: "toolcall_delta", contentIndex: 1, path: ["content"], delta: "# Spec\n" },
+		] } as never);
+		assert.deepEqual(update, { type: "delta", text: "", calls: [
+			{ type: "call_start", index: 1, name: "write", args: { path: "/run/spec.md" } },
+			{ type: "call_delta", index: 1, path: ["content"], delta: "# Spec\n" },
+		] });
+		const snapshot = compact({ type: "snapshot", entries: [], generation: { attempt: 1, message: { content: [{ type: "text", text: "Writing it." }, { type: "toolCall", id: "c1", name: "write", arguments: { path: "/run/spec.md", content: "# Spec\nAC-1" } }] } }, tools: [], nestedTools: [], compactions: [], inbox: [] } as never);
+		assert.deepEqual((snapshot as { calls: unknown }).calls, [{ index: 1, name: "write", args: { path: "/run/spec.md", content: "# Spec\nAC-1" } }]);
+		assert.equal(compact({ type: "message_update", changes: [{ type: "thinking_delta", contentIndex: 0, delta: "hm" }] } as never), null, "nothing to show");
+	});
+
+	it("streams the dashboard's state: the overview, and the open ticket, as soon as they change", async () => {
+		const controller = new AbortController();
+		const res = await fetch(`${url}/api/stream?ticket=T-9`, { signal: controller.signal });
+		assert.equal(res.headers.get("content-type"), "text/event-stream");
+		const reader = res.body!.getReader();
+		let text = "";
+		while (!(text.includes("event: overview") && text.includes("event: ticket"))) text += new TextDecoder().decode((await reader.read()).value);
+		controller.abort();
+		const overview = JSON.parse(/event: overview\ndata: (.*)\n/.exec(text)![1]!);
+		const ticket = JSON.parse(/event: ticket\ndata: (.*)\n/.exec(text)![1]!);
+		assert.ok(Array.isArray(overview.tickets));
+		assert.equal(ticket.ticket.id, "T-9");
+		assert.equal((await fetch(`${url}/api/stream?ticket=..%2Fx`)).status, 400);
 	});
 
 	it("rejects bad ids and unknown routes", async () => {

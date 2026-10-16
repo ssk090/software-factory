@@ -30,6 +30,8 @@ export type Config = {
 	readonly cellPortStart: number;
 	readonly cellPortSpan: number;
 	readonly agentTimeoutMs: number;
+	/** Coordinator repairs per phase and run before a failure blocks the ticket (0: no coordinator). */
+	readonly maxRepairs: number;
 	readonly prLabel: string;
 	readonly trackerComments: boolean;
 	/** Attach the spec and plan to the ticket as .md files (default on). */
@@ -132,6 +134,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		cellPortStart: num(env.CELL_PORT_START, 20000, "CELL_PORT_START"),
 		cellPortSpan: Math.max(1, num(env.CELL_PORT_SPAN, 100, "CELL_PORT_SPAN")),
 		agentTimeoutMs: num(env.AGENT_TIMEOUT, 3600, "AGENT_TIMEOUT") * 1000,
+		maxRepairs: num(env.MAX_REPAIRS, 2, "MAX_REPAIRS"),
 		prLabel: env.PR_LABEL ?? "",
 		trackerComments: flag(env.TRACKER_COMMENTS, false),
 		trackerAttach: flag(env.TRACKER_ATTACH, true),

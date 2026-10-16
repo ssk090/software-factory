@@ -19,6 +19,8 @@ import { score } from "./sentry.ts";
 const context = BACKGROUND_CONTEXT;
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
 const MAX_BODY = 64 * 1024;
+/** How often the state stream looks for a change. */
+const STREAM_MS = 400;
 
 class HttpFail extends Error {
 	readonly status: number;
@@ -86,11 +88,23 @@ function compact(event: AgentEvent): Record<string, unknown> | null {
 				}
 				return [];
 			});
-			return { type: "snapshot", entries, running: event.run !== undefined };
+			// A tool call the model is still writing: a late viewer of a live document starts from it.
+			const partial = event.generation?.message as { content?: { type: string; name?: string; arguments?: unknown }[] } | undefined;
+			const calls = (partial?.content ?? []).flatMap((part, index) => (part.type === "toolCall" ? [{ index, name: part.name, args: part.arguments ?? {} }] : []));
+			return { type: "snapshot", entries, running: event.run !== undefined, calls };
 		}
 		case "message_update": {
 			const text = event.changes.flatMap((c) => (c.type === "text_delta" ? [c.delta] : [])).join("");
-			return text ? { type: "delta", text } : null;
+			// Tool calls as the model writes them: the start (name, arguments so far) and each argument delta
+			// by its path, so the dashboard can show a file the agent is writing as it is written.
+			const calls = event.changes.flatMap((c): Record<string, unknown>[] => {
+				if (c.type === "toolcall_start") {
+					const block = c.block as { type?: string; name?: string; arguments?: unknown };
+					return block.type === "toolCall" ? [{ type: "call_start", index: c.contentIndex, name: block.name, args: block.arguments ?? {} }] : [];
+				}
+				return c.type === "toolcall_delta" ? [{ type: "call_delta", index: c.contentIndex, path: c.path, delta: c.delta }] : [];
+			});
+			return text || calls.length > 0 ? { type: "delta", text, calls } : null;
 		}
 		case "message_end": {
 			if (!AssistantEntry.is(event.entry)) return null;
@@ -117,6 +131,8 @@ function compact(event: AgentEvent): Record<string, unknown> | null {
 			return null;
 	}
 }
+
+export const _test = { compact };
 
 export async function startServer(factory: Factory, options: { dashboardFile: string; tokenFile: string }): Promise<{ server: Server; url: string; token: string }> {
 	const { dash } = factory.deps.config;
@@ -171,20 +187,8 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 		if (parts[0] !== "api") throw new HttpFail(404, "not found");
 		const [, area, key, action] = parts;
 
-		if (method === "GET" && area === "overview") {
-			const tickets = await factory.tickets();
-			const inbox = await factory.inbox();
-			const issues = Object.values(inbox.issues).map((i) => ({ ...i, score: score(i) })).sort((a, b) => b.score - a.score || b.lastSeen.localeCompare(a.lastSeen));
-			const { config } = factory.deps;
-			return json(res, 200, {
-				tickets,
-				sentry: { configured: config.sentry.token !== "" && config.sentry.org !== "", environment: inbox.environment || config.sentry.environment, lastSync: inbox.lastSync, lastError: inbox.lastError, issues },
-				sprintConfigured: config.clickup.sprintListId !== "" || config.clickup.sprintFolderId !== "",
-				specGate: config.specGate,
-				usage: factory.usage(),
-				phases: PHASES,
-			});
-		}
+		if (method === "GET" && area === "overview") return json(res, 200, await overview());
+		if (method === "GET" && area === "stream") return state(res, url);
 		if (method === "GET" && area === "sprint") {
 			try {
 				return json(res, 200, await factory.sprint(url.searchParams.get("refresh") === "1"));
@@ -196,14 +200,9 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 		if (area === "tickets" && key !== undefined) {
 			const ticketId = id(key);
 			if (method === "GET" && action === undefined) {
-				const ticket = await factory.ticket(ticketId);
-				if (ticket === undefined) throw new HttpFail(404, "unknown ticket");
-				const files: Record<string, string | null> = {};
-				const logs = ["route.log", "guard.log", "skills.log", "setup.log", ...ticket.verify.map((v) => v.log)];
-				for (const name of ["spec.md", "plan.md", "tests.md", "blocked.md", "verify-failed.md", "judge.txt", ...ticket.reviews.map((r) => r.file), ...logs]) files[name] = await runFile(ticket, name);
-				// A running step's usage so far (an ended step carries its own).
-				const steps = await Promise.all((ticket.steps ?? []).map(async (s) => (s.usage == null ? { ...s, usage: await factory.stepUsage(s.conversationId) } : s)));
-				return json(res, 200, { ticket: { ...ticket, steps, events: ticket.events ?? [], paused: ticket.paused ?? null }, files, phases: PHASES });
+				const detail = await ticketDetail(ticketId);
+				if (detail === null) throw new HttpFail(404, "unknown ticket");
+				return json(res, 200, detail);
 			}
 			if (method === "GET" && action === "events") return stream(res, url, ticketId);
 			if (method === "POST") {
@@ -240,6 +239,74 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 			return json(res, 200, { removed: await factory.gc() });
 		}
 		throw new HttpFail(404, "not found");
+	};
+
+	/** What the dashboard shows: every ticket, the Sentry inbox, the spend. */
+	const overview = async () => {
+		const tickets = await factory.tickets();
+		const inbox = await factory.inbox();
+		const issues = Object.values(inbox.issues).map((i) => ({ ...i, score: score(i) })).sort((a, b) => b.score - a.score || b.lastSeen.localeCompare(a.lastSeen));
+		const { config } = factory.deps;
+		return {
+			tickets,
+			sentry: { configured: config.sentry.token !== "" && config.sentry.org !== "", environment: inbox.environment || config.sentry.environment, lastSync: inbox.lastSync, lastError: inbox.lastError, issues },
+			sprintConfigured: config.clickup.sprintListId !== "" || config.clickup.sprintFolderId !== "",
+			specGate: config.specGate,
+			usage: factory.usage(),
+			phases: PHASES,
+		};
+	};
+	/** One ticket with its run folder files and its steps' usage so far, or null. */
+	const ticketDetail = async (ticketId: string) => {
+		const ticket = await factory.ticket(ticketId);
+		if (ticket === undefined) return null;
+		const files: Record<string, string | null> = {};
+		const logs = ["route.log", "guard.log", "skills.log", "setup.log", ...ticket.verify.map((v) => v.log)];
+		for (const name of ["spec.md", "plan.md", "tests.md", "blocked.md", "verify-failed.md", "judge.txt", ...ticket.reviews.map((r) => r.file), ...logs]) files[name] = await runFile(ticket, name);
+		// A running step's usage so far (an ended step carries its own).
+		const steps = await Promise.all((ticket.steps ?? []).map(async (s) => (s.usage == null ? { ...s, usage: await factory.stepUsage(s.conversationId) } : s)));
+		return { ticket: { ...ticket, steps, events: ticket.events ?? [], paused: ticket.paused ?? null }, files, phases: PHASES };
+	};
+	/**
+	 * The dashboard's state as server-sent events: the overview, and the ticket named by ?ticket=,
+	 * each sent first and then again whenever it changes (checked every STREAM_MS here, where it is
+	 * cheap, instead of the browser polling).
+	 */
+	const state = async (res: ServerResponse, url: URL) => {
+		const wanted = url.searchParams.get("ticket");
+		const ticketId = wanted === null || wanted === "" ? null : id(wanted);
+		res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
+		let last = { overview: "", ticket: "" };
+		let busy = false;
+		let open = true;
+		const tick = async () => {
+			if (busy || !open) return;
+			busy = true;
+			try {
+				const o = JSON.stringify(await overview());
+				if (o !== last.overview) res.write(`event: overview\ndata: ${o}\n\n`);
+				last.overview = o;
+				if (ticketId !== null) {
+					const detail = await ticketDetail(ticketId);
+					const t = JSON.stringify(detail ?? { error: "unknown ticket" });
+					if (t !== last.ticket) res.write(`event: ticket\ndata: ${t}\n\n`);
+					last.ticket = t;
+				}
+			} catch {
+				// a closing session: the next tick or the reconnect tries again
+			} finally {
+				busy = false;
+			}
+		};
+		await tick();
+		const timer = setInterval(() => void tick(), STREAM_MS);
+		const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
+		res.on("close", () => {
+			open = false;
+			clearInterval(timer);
+			clearInterval(ping);
+			last = { overview: "", ticket: "" };
+		});
 	};
 
 	/** Server-sent events of one step conversation: the current state first, then each change. */
