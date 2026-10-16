@@ -9,7 +9,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { TaskId } from "@earendil-works/pi-durable";
 import { type Config, loadConfig } from "./config.ts";
 import type { Ticket } from "./docs.ts";
-import { git, run } from "./git.ts";
+import { git, run, useOriginUrl } from "./git.ts";
 import { GitHubCli } from "./github.ts";
 import { Factory, type HostDeps } from "./host.ts";
 import { requestJson } from "./http.ts";
@@ -292,6 +292,7 @@ async function doctor(config: Config) {
 async function main() {
 	const [command, ...args] = process.argv.slice(2);
 	const config = loadConfig();
+	useOriginUrl(config.originUrl);
 	switch (command) {
 		case "serve":
 			return serve(config);

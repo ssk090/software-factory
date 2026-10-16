@@ -34,8 +34,9 @@ import { addEvent, type Revision, StepDoc, type StepRecord, type StepUsage, type
 import { type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
 import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, run, testsKept, writeGuardHooks } from "./git.ts";
 import { learn, learnedVerify, learnVerify, readLessons } from "./lessons.ts";
+import { formatUnneeded, keptOnPurpose, notInPlan, unneededFiles } from "./scope.ts";
 import { formatFindings, redact, scanBranch } from "./secrets.ts";
-import type { GitHost } from "./github.ts";
+import type { GitHost, InlineComment } from "./github.ts";
 import { family, type Lanes, modelName, pickModel } from "./lanes.ts";
 import { buildPrompt, hasRole, STEP_EXTENSIONS } from "./roles.ts";
 import { steFaults, steRoles } from "./ste.ts";
@@ -176,6 +177,24 @@ class Repairable extends Blocked {
 /** A check that did not finish: killed by the system (out of memory) rather than failing. */
 const KILLED = /\bSIGKILL\b|\bKilled\b|JavaScript heap out of memory|\bENOMEM\b|out of memory|exit code 137\b/i;
 
+/** The reviewer's inline comments (RUN/review-N.comments.json): well-formed ones only, at most 10. */
+async function inlineComments(file: string): Promise<InlineComment[]> {
+	let data: unknown;
+	try {
+		data = JSON.parse(await readFile(file, "utf8"));
+	} catch {
+		return [];
+	}
+	if (!Array.isArray(data)) return [];
+	const out: InlineComment[] = [];
+	for (const c of data as Record<string, unknown>[]) {
+		if (typeof c?.path !== "string" || !Number.isInteger(c.line) || (c.line as number) < 1 || typeof c.body !== "string" || c.body.trim() === "") continue;
+		const start = Number.isInteger(c.start_line) && (c.start_line as number) >= 1 && (c.start_line as number) < (c.line as number) ? (c.start_line as number) : undefined;
+		out.push({ path: c.path.replace(/^\.\//, ""), line: c.line as number, ...(start !== undefined ? { start_line: start } : {}), body: c.body });
+	}
+	return out.slice(0, 10);
+}
+
 const exists = (path: string) => stat(path).then(() => true, () => false);
 const readText = (path: string) => readFile(path, "utf8").catch(() => "");
 const lastLine = (text: string) => text.split("\n").map((l) => l.replace(/[ \t\r]+$/, "")).filter((l) => l !== "").at(-1) ?? "";
@@ -193,7 +212,7 @@ const OUTPUTS: Record<string, (round: number) => string[]> = {
 	code: () => ["blocked.md"],
 	docs: () => [],
 	"pr-summary": () => ["pr-title.txt", "pr-body.md"],
-	review: (round) => [`review-${round}.md`],
+	review: (round) => [`review-${round}.md`, `review-${round}.comments.json`],
 	fix: () => [],
 	judge: () => ["judge.json"],
 	coordinate: (round) => [`repair-${round}.md`, "blocked.md"],
@@ -308,18 +327,92 @@ export function createPipeline(deps: PipelineDeps) {
 	 * send (new lines, new files, commit messages), then git push, which runs the repo's pre-push hooks.
 	 * Either failure goes to the coordinator.
 	 */
-	const pushSafely = async (ticket: Ticket) => {
+	const pushSafely = async (ticket: Ticket, runtime: R, context: Context) => {
 		const tracking = `refs/remotes/origin/${ticket.branch}`;
 		const since = (await git(ticket.worktree!, "rev-parse", "-q", "--verify", tracking)).code === 0 ? tracking : `refs/remotes/origin/${config.base}`;
+		// Only what the ticket needs: no build output, caches, logs or stray lockfile changes.
+		const unneeded = await unneededFiles(ticket.worktree!, since, await keptOnPurpose(ticket.run!));
+		if (unneeded.length > 0) {
+			throw new Repairable("scope", `the push stopped: ${unneeded.length} file(s) the ticket does not need`, `SINCE=${since}\n\n${formatUnneeded(unneeded)}`);
+		}
+		const extra = await notInPlan(ticket.worktree!, since, ticket.run!);
+		if (extra.length > 0) await note(runtime, context, ticket.id, { kind: "guard", level: "warn", text: `Pushed files the plan does not name: ${extra.slice(0, 12).join(", ")}${extra.length > 12 ? ` and ${extra.length - 12} more` : ""}` });
 		const findings = await scanBranch(ticket.worktree!, since);
 		if (findings.length > 0) {
 			throw new Repairable("secrets", `the push stopped: the secret scan found ${findings.length} possible secret(s) in what it would send`, `SINCE=${since}\n\n${formatFindings(findings)}`);
 		}
-		try {
-			await push(ticket.worktree!, ticket.branch!);
-		} catch (error) {
-			throw new Repairable("push", "git push was refused (the repo's pre-push hooks, or the remote)", message(error));
+		// The repo's pre-push hook runs in the sandbox, where the dependencies were installed (their
+		// native binaries are built for it, not for this machine). Then this machine pushes, without
+		// running the hook again here.
+		let verified = false;
+		if (!config.prePush) {
+			// PRE_PUSH=0: the hook is turned off for this factory; the push goes without it.
+			await note(runtime, context, ticket.id, { kind: "hook", step: "pre-push", level: "warn", text: "Pre-push hook skipped (PRE_PUSH=0)" });
+			verified = true;
+		} else if (container(ticket) !== null) {
+			const sha = await head(ticket.worktree!);
+			const remote = (await git(ticket.worktree!, "rev-parse", "-q", "--verify", tracking)).stdout.trim() || "0".repeat(40);
+			await writeFile(join(ticket.run!, "pre-push.stdin"), `refs/heads/${ticket.branch} ${sha} refs/heads/${ticket.branch} ${remote}\n`);
+			const hook = [
+				'dir=$(GIT_CONFIG_COUNT=0 git config core.hooksPath)',
+				'[ -n "$dir" ] || dir="$(git rev-parse --git-common-dir)/hooks"',
+				'case $dir in /*) ;; *) dir="$(git rev-parse --show-toplevel)/$dir" ;; esac',
+				'[ -x "$dir/pre-push" ] || { echo "no pre-push hook"; exit 0; }',
+				`"$dir/pre-push" origin ${JSON.stringify(config.originUrl || "origin")} < ${JSON.stringify(join(ticket.run!, "pre-push.stdin"))}`,
+			].join("; ");
+			const hookLog = join(ticket.run!, "pre-push.log");
+			// Each run of the hook is a row on the timeline: its start, then how it ended (the dashboard pairs them).
+			const runHook = async () => {
+				const started = Date.now();
+				await note(runtime, context, ticket.id, { kind: "hook", step: "pre-push", text: "Pre-push hook running in the sandbox (pre-push.log)" });
+				const code = await exec(ticket, hook, "pre-push.log", context);
+				const text = await readText(hookLog);
+				const took = duration(Date.now() - started);
+				const killed = code !== 0 && KILLED.test(text);
+				await note(runtime, context, ticket.id, code === 0
+					? { kind: "hook", step: "pre-push", text: lastLine(text) === "no pre-push hook" ? "The repo has no pre-push hook" : `Pre-push hook passed in ${took}` }
+					: { kind: "hook", step: "pre-push", level: "error", text: killed ? `Pre-push hook was killed after ${took} (out of memory or SIGKILL)` : `Pre-push hook failed after ${took} (exit ${code})` });
+				return { code, killed };
+			};
+			let { code, killed } = await runHook();
+			// Killed (out of memory, SIGKILL) is no result: once more, then it is the sandbox's memory,
+			// which the coordinator cannot fix on the branch.
+			if (killed) ({ code, killed } = await runHook());
+			if (code !== 0) {
+				const tail = (await readText(hookLog)).split("\n").slice(-120).join("\n");
+				if (killed) throw new Blocked(`the repo's pre-push hook was killed twice in the sandbox (out of memory or SIGKILL, pre-push.log): ${KILLED_HELP}`);
+				throw new Repairable("push", "the repo's pre-push hook failed (it ran in the sandbox, see pre-push.log)", tail);
+			}
+			verified = true;
 		}
+		try {
+			await push(ticket.worktree!, ticket.branch!, { verify: !verified });
+		} catch (error) {
+			throw new Repairable("push", verified ? `git push was refused by the remote (${config.prePush ? "the pre-push hook passed in the sandbox" : "the pre-push hook is off, PRE_PUSH=0"})` : "git push was refused (the repo's pre-push hooks, or the remote)", message(error));
+		}
+	};
+
+	/**
+	 * Post a review on the PR: the review file as its body and the reviewer's inline comments at their
+	 * lines. GitHub refuses the whole review when one line is outside the diff, so then the comments go
+	 * into the body instead. Returns what the timeline says about it.
+	 */
+	const postReview = async (runtime: R, context: Context, ticket: Ticket, round: number, review: string, inline: InlineComment[]): Promise<string> => {
+		const body = await scrub(runtime, context, ticket, `review ${round}`, review);
+		const said = (e: unknown) => log(ticket, `review comment: ${message(e)}`);
+		if (inline.length === 0) {
+			await gitHost.comment(ticket.worktree!, ticket.pr!, body).catch(said);
+			return "";
+		}
+		const comments: InlineComment[] = [];
+		for (const c of inline) comments.push({ ...c, body: await scrub(runtime, context, ticket, `an inline comment on ${c.path}`, c.body) });
+		const commit = await head(ticket.worktree!);
+		const anchored = await gitHost.review(ticket.worktree!, ticket.pr!, commit, body, comments).then(() => null, (e: unknown) => message(e));
+		if (anchored === null) return ` with ${comments.length} inline comment(s)`;
+		log(ticket, `inline review comments refused (${anchored}): posted in the review body`);
+		const listed = comments.map((c) => `**\`${c.path}:${c.start_line !== undefined ? `${c.start_line}-` : ""}${c.line}\`**\n\n${c.body}`).join("\n\n---\n\n");
+		await gitHost.comment(ticket.worktree!, ticket.pr!, `${body}\n\n## Inline comments\n\n${listed}`).catch(said);
+		return ` (GitHub refused the ${comments.length} inline comment(s), so they are in the review body)`;
 	};
 
 	/** A comment on the ticket, at most once per key (memo first: a crash loses it, never doubles it). */
@@ -428,7 +521,8 @@ export function createPipeline(deps: PipelineDeps) {
 		if (model === null) throw new Blocked(`no model left for the ${role} agent: every model in its lane failed or has no login (see route.log)`);
 		// A new attempt starts clean: its old outputs go, so a missing output is this attempt's fault.
 		for (const file of OUTPUTS[role]?.(round) ?? []) await rm(join(run, file), { force: true });
-		const stepHead = cp.stepHead ?? (await head(worktree));
+		const now = await head(worktree);
+		const stepHead = cp.stepHead ?? now;
 		const name = `${role}-${round}-${attempt}`;
 		await runtime.commit(async (tx, current) => {
 			const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: task.id } });
@@ -438,7 +532,7 @@ export function createPipeline(deps: PipelineDeps) {
 			const { sessionId } = await tx.doc(ProviderDoc, conversation.id);
 			const record: StepRecord = {
 				name, role, round, attempt, model: modelName(model), conversationId: conversation.id, taskId: task.id,
-				status: "running", started: Date.now(), ended: null, error: null, sessionId, pausedMs: 0, usage: null,
+				status: "running", started: Date.now(), ended: null, error: null, sessionId, pausedMs: 0, usage: null, headBefore: now,
 			};
 			await editTicket(tx, ticket.id, (t) => {
 				t.steps.push(record);
@@ -500,11 +594,12 @@ export function createPipeline(deps: PipelineDeps) {
 		const error = ok ? null : timedOut ? `timed out after ${Math.round(config.agentTimeoutMs / 1000)}s` : (settled.reason ?? "failed");
 		if (!ok) log(ticket, `${name} on ${step.model} failed: ${error}`);
 		const usage = sumUsage(await runtime.snapshot(UsageDoc, step.conversationId as ConversationId, context).catch(() => undefined));
+		const headAfter = await head(worktree).catch(() => undefined);
 		await runtime.commit(async (tx) => {
 			await editTicket(tx, ticket.id, (t) => {
 				const record = t.steps.find((s) => s.name === name);
 				if (record === undefined || record.status !== "running") return;
-				Object.assign(record, { status: ok ? "done" : "failed", ended: Date.now(), error, usage });
+				Object.assign(record, { status: ok ? "done" : "failed", ended: Date.now(), error, usage, ...(headAfter ? { headAfter } : {}) });
 				const took = duration(Date.now() - record.started - (record.pausedMs ?? 0));
 				addEvent(t, ok
 					? { kind: "step", step: name, text: `${name} done in ${took}${usageText(usage)}` }
@@ -897,7 +992,7 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		pr: async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
-			await pushSafely(ticket);
+			await pushSafely(ticket, runtime, context);
 			let pr = ticket.pr ?? (await gitHost.prFor(ticket.worktree!, ticket.branch!));
 			if (pr === null) {
 				const title = await scrub(runtime, context, ticket, "the PR title", (await readText(join(ticket.run!, "pr-title.txt"))).trim());
@@ -906,6 +1001,8 @@ export function createPipeline(deps: PipelineDeps) {
 				if (config.prLabel) await gitHost.addLabel(ticket.worktree!, pr, config.prLabel).catch((e) => log(ticket, `label: ${e instanceof Error ? e.message : e}`));
 			}
 			log(ticket, `PR ${pr}`);
+			// The PR is up: the ticket waits on engineers from here (review and judge only add to the PR).
+			await setStatus(runtime, context, ticket, config.statuses.inReview);
 			await advance(task, runtime, context, { phase: "review", round: 1 }, (t) => {
 				addEvent(t, { kind: "pr", text: `${t.pr === null ? "Draft PR opened" : "PR"}: ${pr} (branch ${t.branch} pushed)` });
 				t.pr = pr;
@@ -920,15 +1017,17 @@ export function createPipeline(deps: PipelineDeps) {
 			const review = await readText(join(ticket.run!, file));
 			if (review.trim() === "") throw new Blocked(`reviewer wrote no ${file}`);
 			const verdict = /^VERDICT: (PASS|FIX)$/m.exec(review.split("\n").filter((l) => /^VERDICT: (PASS|FIX)$/.test(l)).at(-1) ?? "")?.[1] === "PASS" ? "PASS" : "FIX";
+			const inline = await inlineComments(join(ticket.run!, `review-${round}.comments.json`));
+			let posted = "";
 			if ((await runtime.memo<boolean>(`pr-comment:review-${round}`, context)) === undefined) {
 				await runtime.memo(`pr-comment:review-${round}`, true, context);
-				await gitHost.comment(ticket.worktree!, ticket.pr!, await scrub(runtime, context, ticket, `review ${round}`, review)).catch((e) => log(ticket, `review comment: ${e instanceof Error ? e.message : e}`));
+				posted = await postReview(runtime, context, ticket, round, review, inline);
 			}
 			const last = verdict === "PASS" || round >= config.maxReviewRounds;
 			await advance(task, runtime, context, { phase: last ? (task.state.checkpoint.fixed ? "pr-summary-2" : "judge") : "fix", step: null, verdict }, (t) => {
 				t.reviews.push({ round, verdict, file });
 				const end = verdict === "FIX" && last ? ` (no rounds left: MAX_REVIEW_ROUNDS=${config.maxReviewRounds})` : "";
-				addEvent(t, { kind: "review", level: verdict === "PASS" ? "info" : "warn", text: `Review ${round}: ${verdict}${end}; posted on the PR` });
+				addEvent(t, { kind: "review", level: verdict === "PASS" ? "info" : "warn", text: `Review ${round}: ${verdict}${end}; posted on the PR${posted}` });
 			});
 		},
 		fix: async (task, runtime, context) => {
@@ -948,7 +1047,7 @@ export function createPipeline(deps: PipelineDeps) {
 		"push-fix": async (task, runtime, context) => {
 			// Its own phase: a refused push goes to the coordinator, and only the push runs again.
 			const ticket = await ticketOf(task, runtime, context);
-			await pushSafely(ticket);
+			await pushSafely(ticket, runtime, context);
 			await advance(task, runtime, context, { phase: "review", round: task.state.checkpoint.round + 1, step: null }, (t) => {
 				addEvent(t, { kind: "git", text: `Fixes pushed to ${ticket.branch}` });
 			});
@@ -1025,7 +1124,8 @@ export function createPipeline(deps: PipelineDeps) {
 			: base.ok ? `VERIFY_CMD (${config.verifyCmd}) passed on ${config.base}`
 			: cp.baselineRed ? `VERIFY_CMD (${config.verifyCmd}) already failed on ${config.base} before this ticket (verify-1.log)`
 			: `VERIFY_CMD (${config.verifyCmd}) did not finish on ${config.base} (killed, verify-1.log): no result`;
-		const did = error.kind === "push" ? `git push origin HEAD:refs/heads/${ticket.branch} (this runs the repo's pre-push hooks on the branch)`
+		const did = error.kind === "push" ? `git push origin HEAD:refs/heads/${ticket.branch}${container(ticket) !== null ? ". The repo's pre-push hook runs in the sandbox first (pre-push.log), where the dependencies were installed" : " (this runs the repo's pre-push hooks on the branch)"}`
+			: error.kind === "scope" ? "the factory's check that the push holds only what the ticket needs (no build output, caches, logs, editor files, run-folder files, or a lockfile changed without a package.json)"
 			: error.kind === "secrets" ? "the factory's secret scan of everything the push would send: added lines, added files, commit messages"
 			: error.kind === "blocked" ? `the coder (${cp.step ? `${cp.step.role}-${cp.step.round}-${cp.step.attempt}` : "the step"}) stopped and wrote blocked.md (below). Its work, committed or not, is in the worktree`
 			: error.kind === "killed" ? `VERIFY_CMD in the sandbox: ${await verifyCommand()}${config.verifyCmd !== (await verifyCommand()) ? ` (the learned way to run ${config.verifyCmd})` : ""}. It was killed by the system before it finished: no result. The sandbox has the memory Docker gives it${config.sandboxArgs.length ? ` (SANDBOX_ARGS: ${config.sandboxArgs.join(" ")})` : " (no SANDBOX_ARGS limit)"}`

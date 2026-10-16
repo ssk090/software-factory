@@ -110,6 +110,9 @@ export class FakeGitHost implements GitHost {
 	async comment(_w: string, pr: string, body: string) {
 		this.log.push(`comment ${pr} ${body.split("\n").at(-2) ?? ""}`.trim());
 	}
+	async review(_w: string, pr: string, _commit: string, _body: string, comments: readonly { path: string; line: number }[]) {
+		this.log.push(`review ${pr} ${comments.map((c) => `${c.path}:${c.line}`).join(" ")}`);
+	}
 	async ready(_w: string, pr: string) {
 		this.log.push(`ready ${pr}`);
 	}
@@ -142,7 +145,7 @@ export type Behaviour = {
 	/** The coder also commits this file (path, content): to leak a secret, say. */
 	coderFile?: [string, string];
 	/** The coordinator: commit the file the pre-push hook wants, take a leaked file out of every unpushed commit, or give up. */
-	coordinator?: "commit-fixed" | "remove-leak" | "give-up" | "verify-concurrency" | "finish-coder";
+	coordinator?: "commit-fixed" | "remove-leak" | "give-up" | "verify-concurrency" | "finish-coder" | "remove-listed";
 	/** The coder does the work but does not commit, and writes this into blocked.md. */
 	coderGivesUp?: string;
 };
@@ -197,7 +200,7 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 		}
 		if (prompt.includes("# Agent: coder")) {
 			const escape = "{ git update-ref refs/heads/main HEAD; git branch other-ticket; git tag v-agent; } >" + `${run}/escape.log 2>&1;`;
-			const leak = behaviour.coderFile ? `printf '%s\\n' ${JSON.stringify(behaviour.coderFile[1])} > ${behaviour.coderFile[0]} && git add ${behaviour.coderFile[0]}; ` : "";
+			const leak = behaviour.coderFile ? `mkdir -p "$(dirname ${behaviour.coderFile[0]})" && printf '%s\\n' ${JSON.stringify(behaviour.coderFile[1])} > ${behaviour.coderFile[0]} && git add ${behaviour.coderFile[0]}; ` : "";
 			const extra = (round === 1 && behaviour.coder ? `${behaviour.coder}; ` : "") + leak;
 			const pause = behaviour.coderSleep ? `touch ${run}/coder-started; sleep ${behaviour.coderSleep}; ` : "";
 			return bash(`${escape} ${extra}${pause}echo "port $PORT_BASE token \${CLICKUP_TOKEN:-none} $([ -f /.dockerenv ] && echo container || echo host)" > ${run}/cell.txt; echo code >> file.txt && git add file.txt && git commit -qm "code"`);
@@ -205,6 +208,11 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 		if (prompt.includes("# Agent: coordinator")) {
 			const n = round;
 			const report = (first: string, lesson: string) => `printf '%s\\n\\n%s\\n' ${JSON.stringify(first)} ${JSON.stringify(`LESSON: ${lesson}`)} > ${run}/repair-${n}.md`;
+			if (behaviour.coordinator === "remove-listed") {
+				const since = "$(grep -o 'SINCE[^:]*: [^ ]*' " + `${run}/failure-${n}.md | head -1 | sed 's/.*: //')`;
+				const file = "$(grep -o '^- [^:]*: ' " + `${run}/failure-${n}.md | grep -v '^- [A-Z]' | head -1 | sed 's/^- //; s/: $//')`;
+				return bash(`f=${file}; git reset -q --soft ${since} && git rm -q -r --cached "$f" && rm -rf "$f" && git commit -qm "code, without the build output" && ${report("Took the build output out of the commits.", "Never commit build output: it is not part of a change.")}`);
+			}
 			if (behaviour.coordinator === "finish-coder") {
 				return bash(`git add file.txt && git commit -qm "code (the coordinator finished it)" && ${report("The coder lost its shell before it could commit; the work was done, so it is committed now.", "none")}`);
 			}
@@ -222,7 +230,11 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 		}
 		if (prompt.includes("# Agent: docs writer")) return write(`${run}/docs.md`, "No docs change needed\n");
 		if (prompt.includes("# Agent: PR summary")) return bash(`echo "title ${round}" > ${run}/pr-title.txt && echo body > ${run}/pr-body.md`);
-		if (prompt.includes("# Agent: code reviewer")) return write(`${run}/review-${round}.md`, `P1 x\nVERDICT: ${round === 1 ? "FIX" : "PASS"}\n`);
+		if (prompt.includes("# Agent: code reviewer")) {
+			// Round 1 also leaves an inline comment with a one-click suggestion (and one malformed entry the factory drops).
+			const inline = round === 1 ? JSON.stringify([{ path: "file.txt", line: 1, body: "🔴 issue (blocking): **x**\n\n```suggestion\nfix\n```" }, { path: "file.txt" }]) : "[]";
+			return bash(`printf '%s' '${inline}' > ${run}/review-${round}.comments.json && printf 'P1 x\nVERDICT: %s\n' ${round === 1 ? "FIX" : "PASS"} > ${run}/review-${round}.md`);
+		}
 		if (prompt.includes("# Agent: fixer")) return bash(`echo fix >> file.txt && git commit -qam "fix"`);
 		if (prompt.includes("# Agent: judge")) {
 			return write(`${run}/judge.json`, JSON.stringify({ score: 4, summary: "done", criteria: [{ status: "met" }], hallucinations: [] }));

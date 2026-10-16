@@ -23,7 +23,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Config } from "./config.ts";
 import { addEvent, type Issue, SentryInbox, StepDoc, type StepUsage, type Ticket, TicketDoc, TicketIndex } from "./docs.ts";
 import { dockerEnv, type EnvFactory, nodeEnv, reapOrphans, removeContainer } from "./env.ts";
-import { cellEnv, git, gitIdentity, removeWorktree } from "./git.ts";
+import { cellEnv, git, gitIdentity, removeWorktree, useOriginUrl } from "./git.ts";
 import type { GitHost } from "./github.ts";
 import type { Lanes } from "./lanes.ts";
 import { createPipeline, duration, type PipelineInput, sumUsage } from "./pipeline.ts";
@@ -101,6 +101,7 @@ export class Factory {
 		await mkdir(config.treesDir, { recursive: true });
 		// One process owns the session: Pi Durable has no cross-process locking.
 		const lock = deps.memory ? null : await takeLock(join(config.stateDir, "factory.pid"));
+		useOriginUrl(config.originUrl);
 		const envFor = deps.envFor ?? (config.sandbox === "docker" ? dockerEnv : nodeEnv);
 		const identity = await gitIdentity(config.repo);
 		// Every model request goes through the throttle: rate limits, the daily budget, paused tickets.
