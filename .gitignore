@@ -9,3 +9,5 @@ credentials.json
 .DS_Store
 .ruff_cache/
 durable/node_modules
+.claude
+.agents
