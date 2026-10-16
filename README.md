@@ -139,7 +139,7 @@ Set `SENTRY_AUTH_TOKEN` (a token with `event:read`), `SENTRY_ORG` and optionally
 - **Fix this** creates one ClickUp ticket per issue in `SENTRY_CLICKUP_LIST_ID` (assigned to you, `S_TODO`, tag `sentry`) with the issue, its counts and the latest event's exception and in-app stack, and starts its pipeline: the spec writer finds the root cause, and the test writer reproduces it first.
 
 ### ClickUp: your sprint
-Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover today is used, else the latest started) or `CLICKUP_SPRINT_LIST_ID`. *My sprint* lists every task assigned to you in it, including tasks whose home list is elsewhere, with what the factory did with each. With `AUTO_PICKUP=1` the factory also starts, every `POLL_INTERVAL`, the sprint's tasks assigned to you in `S_TODO` (spec) or `S_APPROVED` (build).
+Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover today is used, else the latest started) or `CLICKUP_SPRINT_LIST_ID`. *My sprint* lists every task assigned to you in it, including tasks whose home list is elsewhere, with what the factory did with each. With `AUTO_PICKUP=1` the factory also starts, every `POLL_INTERVAL`, the tickets assigned to you in `S_TODO` (spec) or `S_APPROVED` (build): from the sprint when one is set, else from `CLICKUP_LIST_ID`, else from the whole team. Tickets that are blocked or in review are left alone.
 
 ---
 
@@ -167,7 +167,11 @@ Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover
     ff login [KEY]             save a key in config.env (hidden input) and show the model logins
     ff whoami                  your ClickUp user and team ids
 
-A ticket is a key (`CHP-1234`), an id or a URL. `ff run` without a serving factory hosts the run itself (it also continues any other unfinished ticket) and returns when the ticket finishes or waits at the gate.
+A ticket is a key (`CHP-1234`), an id or a URL.
+- `approve`, `steer`, `stop`, `sentry`, `fix`, `sprint` and `health` talk to the serving factory, so `ff serve` must be running.
+- `status`, `show` and `gc` use the serving factory when there is one, else open the session read-only.
+- `run` and `spec` without a serving factory host the run themselves (they also continue any other unfinished ticket) and return when the ticket finishes or waits at the gate.
+- `config.env` is read from the repo root, or from `FACTORY_CONFIG` when set.
 
 ## Setup (laptop)
 
@@ -180,7 +184,20 @@ A ticket is a key (`CHP-1234`), an id or a URL. `ff run` without a serving facto
     ff doctor
     ff serve                               # then open http://127.0.0.1:8090
 
-Create the tracker statuses named in `config.env`, or map them to existing ones.
+Create the tracker statuses named in `config.env`, or map them to existing ones. Then, in `config.env`:
+- **Your sprint:** `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder) or `CLICKUP_SPRINT_LIST_ID`.
+- **Sentry:** `SENTRY_ORG`, `SENTRY_PROJECTS`, `SENTRY_CLICKUP_LIST_ID`, and `ff login SENTRY_AUTH_TOKEN`.
+- **The repo:** `REPO`, `BASE`, `SETUP_CMD` (e.g. `npm ci`) and `VERIFY_CMD` (e.g. `npm test`).
+- **A second model provider** (e.g. `ff login OPENAI_API_KEY`), so code is reviewed by another model family.
+
+Every setting, with its default, is in `config.example.env`.
+
+### Your first ticket
+1. `ff serve`, and open the dashboard.
+2. *My sprint* → *Plan spec* on a task (or *Factory runs* → enter a ticket key → *Plan spec*). The spec writer and the planner run; watch them under *Live*.
+3. The ticket shows *spec ready: approve*. Read `spec.md` and `plan.md` in its panel, add a note if needed, and *Approve and build*.
+4. Tests, code, docs, the PR and the review loop run. The ticket ends *PR ready* with the PR linked (or *blocked*, with the reason).
+5. Review and merge the PR yourself. `ff gc` later removes its worktree.
 
 ## Setup (server, EC2 or any Docker host)
 
@@ -192,6 +209,43 @@ Create the tracker statuses named in `config.env`, or map them to existing ones.
     ssh -L 8090:127.0.0.1:8090 <server>                  # the dashboard, on your machine
 
 `docker stop` closes the session; every ticket continues from its checkpoint when the container starts again.
+
+## Where things live
+| Path | What |
+|---|---|
+| `config.env` | settings and secrets (gitignored, mode 600) |
+| `state/factory.sqlite` | the Pi Durable session: every ticket, task, conversation and document |
+| `state/factory.pid`, `state/dash.url`, `state/dash.token` | the serving factory: its pid (one owner), its address, this start's token |
+| `runs/<ticket>/` | the run folder agents share: `ticket.md`, `comments.md`, `spec.md`, `plan.md`, `tests.md`, `review-N.md`, `judge.json`, `verify-N.log`, `route.log`, `skills.log`, `guard.log`, `git-hooks/`, `skills/` |
+| `worktrees/<ticket>/` | the ticket's git worktree |
+| `agents/*.md` | the agents' prompts |
+| `durable/lanes.json` | which model each role runs on |
+| `skills/` | vendored skills |
+
+`DATA_DIR` moves `state/`, `runs/` and `worktrees/` elsewhere (the server keeps them in `/srv/factory`).
+
+### The code (`durable/`)
+| File | What |
+|---|---|
+| `src/cli.ts` | `ff`: the commands; `ff serve` starts the host and the server |
+| `src/host.ts` | the host: opens the session, installs the extensions, resumes; start, approve, stop, steer, Fix this, gc |
+| `src/pipeline.ts` | the ticket pipeline task: its phases, agent steps, checks and effects |
+| `src/roles.ts`, `src/skills.ts` | the agents: prompt, skills, guard hook |
+| `src/env.ts`, `src/git.ts` | where agent commands run (this machine or a container), worktrees, the ticket guard |
+| `src/docs.ts` | the documents: tickets, step identity, the Sentry inbox |
+| `src/lanes.ts` | model choice per role |
+| `src/tracker.ts`, `src/github.ts`, `src/sentry.ts`, `src/http.ts` | ClickUp, GitHub (`gh`), Sentry |
+| `src/server.ts`, `dashboard/index.html` | the dashboard and its API |
+| `test/` | the tests and their fakes (`support.ts`) |
+
+## Troubleshooting
+- **Start with `ff doctor`.** Every FAIL line names what to fix.
+- **"origin has no branch BASE":** `git ls-remote origin` failed: check the remote, your SSH key or `GH_TOKEN`, and `BASE`.
+- **"another factory owns state/factory.sqlite":** one `ff serve` per data folder. Use `ff status`, or stop the other one.
+- **"no model left for the ... agent":** no model in that role's lane has a login (`ff login`), or every one failed this run; see `runs/<ticket>/route.log`.
+- **A blocked ticket:** the reason is on the dashboard and in `ff show <ticket>`. Fix the cause, then *Run again* (it continues where it stopped) or *Start fresh*.
+- **The dashboard says "missing or wrong X-Factory-Token":** the factory restarted; reload the page.
+- **Docker sandbox:** `docker build -t software-factory .` after pulling changes; a running ticket's container is `factory-<ticket>`.
 
 ## Tests
 
