@@ -36,7 +36,7 @@ Ideas taken from:
 - [fluent](https://github.com/mrinalwadhwa/fluent): the orchestrator runs the checks itself instead of trusting an agent, and records a baseline so failures already on the base branch are not blamed on the coder.
 - [conveyor](https://github.com/kidus-tiliksew/conveyor): fail closed when a branch is checked out in two places, and clean up a worktree once its PR is merged.
 - [sdlc](https://github.com/bbsnly/sdlc): spec tests are frozen by hash once written, readers may not write, and a pool of parallel workers.
-- [pstack](https://github.com/cursor/plugins/tree/main/pstack) (poteto) and [mattpocock/skills](https://github.com/mattpocock/skills): skills for the agents.
+- [Superpowers](https://github.com/obra/superpowers) (obra), [ponytail](https://github.com/dietrichgebert/ponytail) and [mattpocock/skills](https://github.com/mattpocock/skills): skills for the agents.
 
 ---
 
@@ -71,7 +71,8 @@ and starts again:
   do, typically to run it again). No step starts over and no second conversation is made;
 - commands an agent left running when the process died are ended before anything resumes (each
   agent command records its process group in `runs/<ticket>/exec.pids`);
-- the approval gate keeps waiting; the Sentry and pickup loops keep their timers.
+- the approval gate keeps waiting; a paused ticket stays paused; the Sentry and pickup loops keep their timers;
+- today's model spend is read back from `state/usage.json`.
 
 Effects outside the session are made safe to repeat: ticket statuses and pushes are idempotent, the
 PR is looked up before one is created, and comments are recorded before they are posted (a crash in
@@ -92,6 +93,10 @@ The ticket's status in ClickUp shows where it is; the factory's own state is in 
 | `S_IN_REVIEW` | PR open, ready for a human | factory |
 | `S_BLOCKED` | failed or needs answers, reason on the dashboard (and as a comment with `TRACKER_COMMENTS=1`) | factory |
 
+- **Ask for a change at the gate:** in the dashboard's reader, select text in spec.md or plan.md and say what should change. The agent that wrote the file changes it, in its own conversation (no new step): a spec change goes to the spec writer, then the planner updates plan.md to match. The gate takes the changes in order before your approval, the new versions are attached to the ticket again, and every change is in the log.
+- **Simplified Technical English (ASD-STE100):** the spec writer and the planner (`STE_ROLES`, default `spec,plan`) write in STE, with [agent-ste](https://github.com/ctotheameron/agent-ste) (MIT). Its rules go into their prompt, a write that breaks a hard rule is blocked with each fault named, and the factory lints spec.md and plan.md after the step: faults left (a write through bash is not gated) go back to the same agent once, and what still fails is logged, not blocked. Code and Mermaid blocks are not checked.
+- **Diagrams:** spec.md has a Mermaid diagram of the behaviour the ticket changes, and plan.md one of criteria, tests and files. The dashboard draws them.
+- **Spec and plan on the ticket:** before the gate, `spec.md` and `plan.md` are attached to the ClickUp ticket as `<ticket>-spec.md` and `<ticket>-plan.md` (each once per run; `TRACKER_ATTACH=0` turns it off).
 - **Spec gate (`SPEC_GATE=1`):** after the plan, the pipeline waits. Approve on the dashboard, with `ff approve <ticket> [note]`, or move the ticket to `S_APPROVED`. Your note and the ticket's comments go to the coder and override the spec.
 - **Needs input:** if the spec writer ends spec.md with `STATUS: NEEDS_INPUT`, its questions are posted and the ticket is blocked. No code is written.
 - **Verify gate (`VERIFY_CMD`):** the factory runs it itself, in the ticket's sandbox. It runs once on the untouched base branch first; if that already fails, the gate only reports. After the coder: a failure gets the coder one more fresh session with the failure (`verify-failed.md`), then the ticket is blocked. After each fix: a failure goes to the next reviewer, who must count it as a P1.
@@ -104,6 +109,8 @@ The ticket's status in ClickUp shows where it is; the factory's own state is in 
 - **Running a ticket again:**
   - after a stop or a block, the next run continues at the phase where the last one stopped (the step that was cut off runs again as a new attempt; finished steps do not run again);
   - after a finished run (PR in review), or with `--fresh`, it starts over from the spec. A branch that was already pushed is never rewritten (the factory never force-pushes): the new run gets the next free name, `<branch>-2`, and its own PR.
+
+The coder and the fixer follow [ponytail](https://github.com/dietrichgebert/ponytail) (vendored in `skills/ponytail/`): the smallest complete change. Tests and code follow [Superpowers](https://github.com/obra/superpowers) (vendored in `skills/superpowers/`): the test writer, the coder and the fixer use `test-driven-development` and `verification-before-completion`, the coder and the fixer `systematic-debugging`, the planner `writing-plans`, and the fixer `receiving-code-review`.
 
 Agents (`agents/*.md`, see `agents/README.md`): spec writer, planner, test writer, coder, docs writer (delete `docs.md` to turn it off), PR summary writer, code reviewer, fixer, judge. Each writes the files its prompt names into the run folder (`runs/<ticket>/`); the pipeline checks them before it moves on.
 
@@ -124,7 +131,7 @@ Agents (`agents/*.md`, see `agents/README.md`): spec writer, planner, test write
 
 ### Skills
 Every agent file starts with a header such as `skills: implement, tdd, ponytail`. A ticket can add skills with a `Skills: a, b` line in its description.
-- **Vendored sets:** `skills/supabase/` ([supabase/agent-skills](https://github.com/supabase/agent-skills)), `skills/mattpocock/` ([mattpocock/skills](https://github.com/mattpocock/skills)) and `skills/pstack/` ([pstack](https://github.com/cursor/plugins/tree/main/pstack), named with the `pstack/` prefix), all MIT. `skills/pstack/SOURCE.md` lists what was left out, and why.
+- **Vendored sets:** `skills/superpowers/` ([Superpowers](https://github.com/obra/superpowers)), `skills/ponytail/` ([ponytail](https://github.com/dietrichgebert/ponytail)) and `skills/mattpocock/` ([mattpocock/skills](https://github.com/mattpocock/skills)), all MIT. Each has a SOURCE.md: what was copied, what was left out and why, and how to update it.
 - **The repo's own skills win:** the ticket's repo is searched first (`REPO_SKILL_DIRS`: `.claude/skills`, `.agents/skills`, `.codex/skills`, `.cursor/skills`, `.opencode/skills`, then command folders such as `.claude/commands`; single `<name>.md` files count too), then `SKILLS_PATH`.
 - **Delivery:** the skill is copied into the run folder (a sandboxed agent can read it) and the agent is told to read and follow it. `runs/<ticket>/skills.log` shows which copy each agent got. Missing skills are logged and skipped; names other than `name` or `set/name` are skipped.
 
@@ -136,7 +143,7 @@ Each role has an ordered chain of `<provider>/<model>` from pi-ai's catalog, pre
 ## Intake
 
 ### Sentry: production issues
-Set `SENTRY_AUTH_TOKEN` (a token with `event:read`), `SENTRY_ORG` and optionally `SENTRY_PROJECTS`. Every `SENTRY_POLL_INTERVAL` (and on *Sync now*) the factory lists unresolved issues of `SENTRY_ENVIRONMENT` (default `production`) from the last `SENTRY_PERIOD`.
+Set `SENTRY_AUTH_TOKEN` (a token with `event:read`), `SENTRY_ORG` and optionally `SENTRY_PROJECTS`. Every `SENTRY_POLL_INTERVAL` (and on *Sync now*) the factory lists unresolved issues of `SENTRY_ENVIRONMENT` (default `production`; several allowed, comma-separated, e.g. `prod,production`) from the last `SENTRY_PERIOD`. `SENTRY_PROJECTS` takes project ids.
 - **Fix first** ranks them: Sentry's priority × level × log(events) × (1 + log(users)) × how recently it was seen, ×1.5 when unhandled.
 - **Your decisions are kept:** a sync updates Sentry's fields, never your triage. An issue Sentry no longer lists is shown as resolved. A dismissed issue that Sentry newly marks as regressed comes back.
 - **Fix this** creates one ClickUp ticket per issue in `SENTRY_CLICKUP_LIST_ID` (assigned to you, `S_TODO`, tag `sentry`) with the issue, its counts and the latest event's exception and in-app stack, and starts its pipeline: the spec writer finds the root cause, and the test writer reproduces it first.
@@ -149,8 +156,20 @@ Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover
 ## Dashboard (`ff serve`)
 `http://127.0.0.1:8090` by default (`DASH_HOST`, `DASH_PORT`).
 - **Who may call it:** it listens on loopback only. A request must name an allowed host (no DNS rebinding; `DASH_ALLOWED_HOSTS` adds names), and every action carries the token this start wrote to `state/dash.token` (mode 600), so another web page cannot act through your browser. Listening on another address requires `DASH_PASSWORD` (basic auth).
+- **Timeline:** on top, the run's stages (Received, Spec or Root cause, Approval, Tests, Fix, Pull request, Ready) with the one in progress animated; below, the latest run phase by phase: when each started and how long it took, its agent steps (model, time, tokens, cost), and what happened in it (verify results, review verdicts, the PR, pauses). Phases still ahead are shown faded.
+- **Pause, Continue, Stop:** *Pause* holds the ticket: its pipeline waits before its next phase, and its running step finishes the model request and tool call it is in, then waits. *Continue* goes on from there; nothing is lost and paused time does not count toward `AGENT_TIMEOUT`. *Stop* ends the run (*Run again* continues where it stopped). A pause is durable: it survives a restart.
+- **Logs:** every event of the ticket, newest first, filtered by level and kind and searchable. Events are committed in the same commit as the change they describe, so the log matches what the factory did, also after a crash. `ff logs <ticket>` prints them.
 - **Live view:** pick a step to see its transcript, tool calls and output as they happen.
 - **Steer:** your message joins the running step after its current tool round.
+- **Spend:** today's model spend against the daily budget, in the sidebar and a stat card, and any request waiting for a rate limit.
+
+### Rate limits and the daily budget
+Every model request of every agent goes through one throttle (`durable/src/throttle.ts`), per provider (one API key each):
+- `RATE_LIMIT_RPM` (default 50): requests a minute. A request over it waits for the window.
+- `RATE_LIMIT_TPM` (default 0, no limit): tokens a minute, counted when responses arrive.
+- `DAILY_BUDGET_USD` (default 0, no budget): spend per local day, at pi-ai's catalog prices. When it is reached the factory pauses every running ticket (`budget` in the log) and holds their requests; they continue by themselves the next day. To go on today, raise it and restart `ff serve`. Today's spend is kept in `state/usage.json`, so a restart does not reset it.
+
+`ff usage` prints today's spend per provider and the limits; `ff doctor` shows the limits.
 
 ## Commands
 `ff` is `durable/bin/ff`: link it onto your PATH (see Setup). It sources `config.env`.
@@ -162,7 +181,10 @@ Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover
     ff approve <ticket> [note] approve a spec; the note goes to the coder
     ff steer <ticket> <text>   a message into the ticket's running agent step
     ff stop <ticket>           stop a ticket (worktree and branch stay; ff run continues it)
+    ff pause | resume <ticket> hold a running ticket before its next phase and model request | continue it
     ff status | show <ticket>  what every ticket is doing | one ticket's steps
+    ff logs <ticket>           everything that happened to a ticket, oldest first
+    ff usage                   today's model spend per provider, the rate limits, what is waiting
     ff sentry [sync] | fix <issue id> | sprint
     ff gc [days]               remove worktrees of merged or closed PRs, or idle ones
     ff doctor                  check tools, repo, base branch, gh, ClickUp, sprint, Sentry, sandbox, models
@@ -170,9 +192,9 @@ Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover
     ff login [KEY]             save a key in config.env (hidden input) and show the model logins
     ff whoami                  your ClickUp user and team ids
 
-A ticket is a key (`CHP-1234`), an id or a URL.
-- `approve`, `steer`, `stop`, `sentry`, `fix`, `sprint` and `health` talk to the serving factory, so `ff serve` must be running.
-- `status`, `show` and `gc` use the serving factory when there is one, else open the session read-only.
+A ticket is a key (`CHP-1234`), an id or a URL; with `CLICKUP_ID_PREFIX=CHP`, a bare number (`1234`) too. A ticket ClickUp does not have is refused before it gets a row. A ticket deleted in ClickUp blocks with that reason: *New ClickUp ticket* makes a new one for a Sentry issue (so does *Fix this*); *Remove* (the bin icon on a row; click twice) takes a ticket that is not running off the runs list and deletes the worktree the factory made for it; the ClickUp ticket, the branch and the run folder stay, so running it again picks the branch up.
+- `approve`, `steer`, `stop`, `pause`, `resume`, `usage`, `sentry`, `fix`, `sprint` and `health` talk to the serving factory, so `ff serve` must be running.
+- `status`, `show`, `logs` and `gc` use the serving factory when there is one, else open the session read-only.
 - `run` and `spec` without a serving factory host the run themselves (they also continue any other unfinished ticket) and return when the ticket finishes or waits at the gate.
 - `config.env` is read from the repo root, or from `FACTORY_CONFIG` when set.
 
@@ -219,6 +241,7 @@ Every setting, with its default, is in `config.example.env`.
 | `config.env` | settings and secrets (gitignored, mode 600) |
 | `state/factory.sqlite` | the Pi Durable session: every ticket, task, conversation and document |
 | `state/factory.pid`, `state/dash.url`, `state/dash.token` | the serving factory: its pid (one owner), its address, this start's token |
+| `state/usage.json` | today's model spend, per provider (the daily budget) |
 | `runs/<ticket>/` | the run folder agents share: `ticket.md`, `comments.md`, `spec.md`, `plan.md`, `tests.md`, `review-N.md`, `judge.json`, `verify-N.log`, `route.log`, `skills.log`, `guard.log`, `git-hooks/`, `skills/` |
 | `worktrees/<ticket>/` | the ticket's git worktree |
 | `agents/*.md` | the agents' prompts |
@@ -231,14 +254,16 @@ Every setting, with its default, is in `config.example.env`.
 | File | What |
 |---|---|
 | `src/cli.ts` | `ff`: the commands; `ff serve` starts the host and the server |
-| `src/host.ts` | the host: opens the session, installs the extensions, resumes; start, approve, stop, steer, Fix this, gc |
+| `src/host.ts` | the host: opens the session, installs the extensions, resumes; start, approve, stop, pause, resume, steer, Fix this, gc; pauses tickets when the budget is spent |
 | `src/pipeline.ts` | the ticket pipeline task: its phases, agent steps, checks and effects |
 | `src/roles.ts`, `src/skills.ts` | the agents: prompt, skills, guard hook |
 | `src/env.ts`, `src/git.ts` | where agent commands run (this machine or a container), worktrees, the ticket guard |
-| `src/docs.ts` | the documents: tickets, step identity, the Sentry inbox |
+| `src/docs.ts` | the documents: tickets (with their events), step identity, the Sentry inbox |
 | `src/lanes.ts` | model choice per role |
+| `src/ste.ts` | Simplified Technical English for STE_ROLES: the prompt rules, the write gate, the file check (agent-ste) |
+| `src/throttle.ts` | every model request: rate limits per provider, the daily budget, paused tickets' requests |
 | `src/tracker.ts`, `src/github.ts`, `src/sentry.ts`, `src/http.ts` | ClickUp, GitHub (`gh`), Sentry |
-| `src/server.ts`, `dashboard/index.html` | the dashboard and its API |
+| `src/server.ts`, `dashboard/index.html` | the dashboard and its API; `dashboard/DESIGN.md` is its design guide (shadcn/ui tokens and components) |
 | `test/` | the tests and their fakes (`support.ts`) |
 
 ## Troubleshooting
@@ -256,11 +281,14 @@ Every setting, with its default, is in `config.example.env`.
     # with Docker: the whole pipeline in the docker sandbox
     docker build -t software-factory . && cd durable && SF_DOCKER_PIPELINE=1 SANDBOX_TEST_IMAGE=software-factory npm test
 
-No network: a scratch repo with an origin, a fake tracker and git host, and pi-ai's faux model playing every agent from its prompt (`durable/test/support.ts`). They cover the whole pipeline to a reviewed PR; the gate and your note; a restart mid tool call (the same conversation continues and hears its call was interrupted); `kill -9` of the factory mid step (it continues, and the command it left running is ended); frozen tests; the verify gate's second try; steering; stopping; the reviewer's family rule; Sentry paging, merging, ranking and *Fix this*; the sprint; a failing model moving to the next one; running a ticket again after a stop and after a finished run; the dashboard's host, token and password rules and its API; and, with Docker, the sandbox container (variables, no host secrets, killing a process group, reaping). CI also builds the image and runs a whole pipeline in the docker sandbox (`SF_DOCKER_PIPELINE=1`).
+No network: a scratch repo with an origin, a fake tracker and git host, and pi-ai's faux model playing every agent from its prompt (`durable/test/support.ts`). They cover the whole pipeline to a reviewed PR; the gate and your note; a restart mid tool call (the same conversation continues and hears its call was interrupted); `kill -9` of the factory mid step (it continues, and the command it left running is ended); frozen tests; the verify gate's second try; steering; stopping; pausing mid-step (the step's next request waits, its paused time is not its own) and the timeline it leaves; the daily budget pausing tickets; the throttle's rate windows, budget ledger and holds; the reviewer's family rule; Sentry paging, merging, ranking and *Fix this*; the sprint; a failing model moving to the next one; running a ticket again after a stop and after a finished run; the dashboard's host, token and password rules and its API; and, with Docker, the sandbox container (variables, no host secrets, killing a process group, reaping). CI also builds the image and runs a whole pipeline in the docker sandbox (`SF_DOCKER_PIPELINE=1`).
+
+## Roadmap
+Planned, not built: agents that choose their skills from Superpowers and mattpocock/skills, Jev (a decision model) for the factory's choices, and models routed by the ticket, the spec and the plan, after [jroute](https://github.com/ssk090/jroute). See [ROADMAP.md](ROADMAP.md).
 
 ## Known limits
 - **Pi Durable is experimental:** its API may change between releases. Versions are pinned in `durable/package-lock.json`; upgrade on purpose and run the tests.
-- **Models through API keys:** agents run on pi-ai with providers' API keys (metered), not through agent CLIs or their subscription quotas.
+- **Models through API keys:** agents run on pi-ai with providers' API keys (metered), not through agent CLIs or their subscription quotas. Spend is counted at pi-ai's catalog prices, so the budget is close to, not exactly, your bill.
 - **Tracker:** ClickUp only. **Git host:** GitHub only, through `gh`.
 - **One process per session:** run one `ff serve` per data folder (it refuses a second one).
 - **`SANDBOX=none`:** file tools are confined to the worktree and run folder, but an agent's shell can read the rest of the machine. Use docker for untrusted tickets.
