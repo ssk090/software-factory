@@ -1,5 +1,8 @@
 # software-factory
 
+<img width="2315" height="1313" alt="image" src="https://github.com/user-attachments/assets/a0b5a1d5-e585-4ba0-a899-105e863b22f4" />
+
+
 Turn a tracker ticket, or a production error, into a reviewed pull request. The factory's core is
 built on [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable): every ticket is
 a durable task, every agent step is a durable conversation, and all of it lives in one session file.
