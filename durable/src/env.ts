@@ -78,8 +78,20 @@ export class DockerExecutionEnv extends NodeExecutionEnv {
 	}
 
 	override async exec(command: string | readonly string[], options: ShellExecOptions | undefined, context: Context) {
+		// A container the system stopped (out of memory kills it whole) is started again: its files are
+		// the worktree and the run folder on this machine, so nothing is lost. The agent is told.
+		const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", this.container]);
+		let notice = "";
+		if (state.code === 0 && state.stdout.trim() === "false") {
+			const started = await run("docker", ["start", this.container]);
+			notice = started.code === 0
+				? "[factory] The sandbox container had stopped (the system killed it, most likely out of memory) and was started again. Your files are kept. Run memory-heavy commands with less parallelism."
+				: `[factory] The sandbox container has stopped and could not be started again: ${started.stderr.trim()}`;
+		}
 		const env = { ...this.options.env, ...(options?.env ?? {}) };
-		const argv = typeof command === "string" ? ["bash", "-c", command] : [...command];
+		// The notice is part of the command's own output, so the agent reads it in the tool result.
+		const told = notice && typeof command === "string" ? `printf '%s\\n' ${JSON.stringify(notice)} >&2; ${command}` : command;
+		const argv = typeof told === "string" ? ["bash", "-c", told] : [...told];
 		const id = `${process.pid}-${++DockerExecutionEnv.calls}`;
 		const docker = [
 			"docker", "exec", "-i", "-w", options?.cwd ?? this.options.cwd,
