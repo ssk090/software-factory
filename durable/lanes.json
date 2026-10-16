@@ -1,0 +1,16 @@
+{
+  "_help": "Which model each agent role runs on: \"<provider>/<model>\" from pi-ai's catalog, preferred first. A step whose model fails (after the provider's own retries) moves to the next entry. Entries without a login (the provider's API key, e.g. ANTHROPIC_API_KEY) are skipped. review and judge never use the coder's model family. aliases: roles that share another role's chain.",
+  "lanes": {
+    "spec": ["anthropic/claude-opus-5-5", "openai/gpt-6.1-sol"],
+    "code": ["anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "openai/gpt-6.1-sol"],
+    "review": ["openai/gpt-6.1-sol", "anthropic/claude-opus-5-5"]
+  },
+  "aliases": {
+    "plan": "spec",
+    "test": "code",
+    "docs": "code",
+    "pr-summary": "code",
+    "fix": "code",
+    "judge": "review"
+  }
+}

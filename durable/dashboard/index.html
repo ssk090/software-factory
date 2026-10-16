@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Software factory</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg: #f7f7f8; --card: #fff; --text: #1d1d20; --muted: #6b6b76; --line: #e3e3e8; --accent: #3b5bdb; --ok: #2b8a3e; --warn: #e67700; --bad: #c92a2a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141417; --card: #1d1d22; --text: #ececf1; --muted: #9a9aa6; --line: #2e2e36; --accent: #7c95ff; --ok: #51cf66; --warn: #ffa94d; --bad: #ff6b6b; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0; }
+  nav button { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
+  nav button.on { background: var(--bg); color: var(--text); font-weight: 600; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 0; gap: 16px; padding: 16px 20px; }
+  main.open { grid-template-columns: minmax(0, 1fr) minmax(380px, 42%); }
+  section.card, aside { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+  aside { display: none; position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow: auto; }
+  main.open aside { display: block; }
+  .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .bar .grow { flex: 1; }
+  .muted { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.click { cursor: pointer; } tr.click:hover { background: var(--bg); }
+  button.act { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit; }
+  button.act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.act:disabled { opacity: .5; cursor: default; }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); white-space: nowrap; }
+  .chip.ok { color: var(--ok); border-color: var(--ok); } .chip.warn { color: var(--warn); border-color: var(--warn); } .chip.bad { color: var(--bad); border-color: var(--bad); } .chip.run { color: var(--accent); border-color: var(--accent); }
+  .score { font-weight: 700; font-variant-numeric: tabular-nums; }
+  pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 360px; overflow: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  textarea, input[type=text] { width: 100%; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  .live { max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg); font: 12px/1.45 ui-monospace, Menlo, monospace; }
+  .live .tool { color: var(--accent); } .live .user { color: var(--muted); } .live .out { color: var(--muted); white-space: pre-wrap; }
+  .error { color: var(--bad); }
+  h2 { font-size: 15px; margin: 0; } h3 { font-size: 13px; margin: 16px 0 6px; }
+  details summary { cursor: pointer; margin: 6px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Software factory</h1>
+  <nav id="tabs">
+    <button data-tab="sentry" class="on">Fix first <span id="n-sentry" class="muted"></span></button>
+    <button data-tab="sprint">My sprint <span id="n-sprint" class="muted"></span></button>
+    <button data-tab="runs">Factory runs <span id="n-runs" class="muted"></span></button>
+  </nav>
+  <span class="grow" style="flex:1"></span>
+  <span id="status" class="muted"></span>
+</header>
+<main id="main">
+  <div>
+    <section class="card" id="tab-sentry">
+      <div class="bar"><h2>Production issues (Sentry)</h2><span id="sentry-env" class="chip"></span><span class="grow"></span>
+        <select id="sentry-filter"><option value="new">To decide</option><option value="ticketed">Ticketed</option><option value="dismissed">Dismissed</option><option value="gone">Resolved in Sentry</option><option value="all">All</option></select>
+        <button class="act" id="sentry-sync">Sync now</button></div>
+      <div id="sentry-note" class="muted"></div>
+      <table><thead><tr><th>Fix first</th><th>Issue</th><th class="num">Events</th><th class="num">Users</th><th>Last seen</th><th>Level</th><th></th></tr></thead><tbody id="sentry-rows"></tbody></table>
+    </section>
+    <section class="card" id="tab-sprint" hidden>
+      <div class="bar"><h2 id="sprint-title">My sprint (ClickUp)</h2><span class="grow"></span><button class="act" id="sprint-refresh">Refresh</button></div>
+      <div id="sprint-note" class="muted"></div>
+      <table><thead><tr><th>Task</th><th>ClickUp status</th><th>Priority</th><th>Due</th><th>Factory</th><th></th></tr></thead><tbody id="sprint-rows"></tbody></table>
+    </section>
+    <section class="card" id="tab-runs" hidden>
+      <div class="bar"><h2>Factory runs</h2><span class="grow"></span><input type="text" id="run-ref" placeholder="Ticket key, id or URL" style="width:260px"><button class="act primary" id="run-start">Plan spec</button></div>
+      <table><thead><tr><th>Ticket</th><th>State</th><th>Phase</th><th>Step</th><th>PR</th><th>Updated</th></tr></thead><tbody id="run-rows"></tbody></table>
+    </section>
+  </div>
+  <aside id="detail"></aside>
+</main>
+<script>
+"use strict";
+const TOKEN = "__FACTORY_TOKEN__";
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) e.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return e;
+};
+const link = (href, text) => /^https?:\/\//.test(href || "") ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, text) : document.createTextNode(text);
+const ago = (t) => { if (!t) return ""; const ms = typeof t === "number" ? t : Date.parse(t); if (Number.isNaN(ms)) return ""; const s = Math.max(0, (Date.now() - ms) / 1000); return s < 90 ? `${Math.round(s)}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : s < 172800 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-Factory-Token": TOKEN }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+const flash = (text, bad) => { $("status").textContent = text; $("status").className = bad ? "error" : "muted"; };
+async function act(button, work) {
+  button.disabled = true;
+  try { await work(); await refresh(); } catch (e) { flash(e.message, true); } finally { button.disabled = false; }
+}
+const STATE = { queued: ["queued", "warn"], running: ["running", "run"], waiting_approval: ["spec ready: approve", "warn"], blocked: ["blocked", "bad"], in_review: ["PR ready", "ok"], stopped: ["stopped", ""] };
+const chip = (t) => { if (!t) return el("span", { class: "muted" }, "not started"); const [label, kind] = STATE[t.state] || [t.state, ""]; return el("span", { class: `chip ${kind}` }, label); };
+const runningStep = (t) => (t.steps || []).findLast((s) => s.status === "running");
+
+// ---- tabs ----
+let tab = "sentry";
+for (const b of document.querySelectorAll("#tabs button")) b.addEventListener("click", () => {
+  tab = b.dataset.tab;
+  for (const x of document.querySelectorAll("#tabs button")) x.classList.toggle("on", x === b);
+  for (const name of ["sentry", "sprint", "runs"]) $(`tab-${name}`).hidden = name !== tab;
+  if (tab === "sprint") loadSprint(false);
+});
+
+// ---- Sentry ----
+let overview = null;
+function drawSentry() {
+  const s = overview.sentry;
+  $("sentry-env").textContent = s.environment || "production";
+  $("sentry-note").textContent = !s.configured ? "Sentry is not set up: set SENTRY_AUTH_TOKEN and SENTRY_ORG (and SENTRY_PROJECTS) in config.env." : s.lastError ? `Last sync failed: ${s.lastError}` : s.lastSync ? `Synced ${ago(s.lastSync)}. Sorted by Fix first: priority, level, events, users, recency, unhandled.` : "Not synced yet.";
+  $("sentry-note").className = s.lastError ? "error" : "muted";
+  const filter = $("sentry-filter").value;
+  const shown = s.issues.filter((i) => filter === "all" || (filter === "gone" ? i.gone : !i.gone && i.triage === filter));
+  $("n-sentry").textContent = String(s.issues.filter((i) => !i.gone && i.triage === "new").length);
+  $("sentry-rows").replaceChildren(...shown.map((i) => {
+    const ticket = overview.tickets.find((t) => t.id === i.ticketId);
+    const actions = i.triage === "ticketed"
+      ? [ticket ? el("button", { class: "act", onclick: () => openTicket(ticket.id) }, "Open run") : el("span", { class: "muted" }, "ticketed")]
+      : i.triage === "dismissed"
+        ? [el("button", { class: "act", onclick: (e) => act(e.target, () => api(`/api/sentry/${i.id}/restore`, {})) }, "Restore")]
+        : [el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { const r = await api(`/api/sentry/${i.id}/fix`, {}); flash(`ticket created, spec started`); openTicket(r.ticketId); }) }, "Fix this"), " ",
+           el("button", { class: "act", onclick: (e) => act(e.target, () => api(`/api/sentry/${i.id}/dismiss`, {})) }, "Dismiss")];
+    return el("tr", {},
+      el("td", { class: "score" }, i.gone ? "–" : i.score.toFixed(1)),
+      el("td", {}, link(i.permalink, i.shortId), " ", el("span", {}, i.title), el("div", { class: "muted" }, `${i.project} · ${i.culprit}${i.unhandled ? " · unhandled" : ""}${i.substatus ? ` · ${i.substatus}` : ""}`)),
+      el("td", { class: "num" }, i.events), el("td", { class: "num" }, i.users), el("td", {}, ago(i.lastSeen)),
+      el("td", {}, el("span", { class: `chip ${i.level === "fatal" || i.level === "error" ? "bad" : i.level === "warning" ? "warn" : ""}` }, i.level || "?"), i.priority ? el("div", { class: "muted" }, i.priority) : null),
+      el("td", {}, ...actions));
+  }));
+}
+$("sentry-filter").addEventListener("change", () => overview && drawSentry());
+$("sentry-sync").addEventListener("click", (e) => act(e.target, async () => { const r = await api("/api/sentry/sync", {}); flash(`synced ${r.issues} issues`); }));
+
+// ---- Sprint ----
+let sprint = null;
+async function loadSprint(refresh) {
+  try {
+    sprint = await api(`/api/sprint${refresh ? "?refresh=1" : ""}`);
+  } catch (e) { sprint = { error: e.message }; }
+  drawSprint();
+}
+function drawSprint() {
+  if (!sprint) return;
+  if (sprint.error) { $("sprint-note").textContent = sprint.error; $("sprint-note").className = "error"; $("sprint-rows").replaceChildren(); return; }
+  $("sprint-title").textContent = `My sprint: ${sprint.sprint.name}`;
+  $("sprint-note").textContent = `${sprint.tasks.length} tasks assigned to you. Plan spec runs the spec writer and planner; you approve the spec here, then the factory builds it.`;
+  $("sprint-note").className = "muted";
+  $("n-sprint").textContent = String(sprint.tasks.length);
+  $("sprint-rows").replaceChildren(...sprint.tasks.map((t) => {
+    const f = overview?.tickets.find((x) => x.id === t.id) || t.factory;
+    const live = f && (f.state === "running" || f.state === "queued" || f.state === "waiting_approval");
+    const actions = [];
+    if (!live) actions.push(el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { await api(`/api/tickets/${t.id}/start`, { gate: true }); openTicket(t.id); }) }, f ? "Plan again" : "Plan spec"));
+    if (f) actions.push(" ", el("button", { class: "act", onclick: () => openTicket(t.id) }, "Open"));
+    return el("tr", {},
+      el("td", {}, link(t.url, t.cid), " ", t.title, t.list ? el("div", { class: "muted" }, t.list) : null),
+      el("td", {}, el("span", { class: "chip", style: t.statusColor ? `border-color:${/^#[0-9a-f]{3,8}$/i.test(t.statusColor) ? t.statusColor : "inherit"}` : null }, t.status)),
+      el("td", {}, t.priority || ""), el("td", {}, t.due ? new Date(t.due).toLocaleDateString() : ""),
+      el("td", {}, chip(f), f && f.phase ? el("div", { class: "muted" }, f.phase) : null),
+      el("td", {}, ...actions));
+  }));
+}
+$("sprint-refresh").addEventListener("click", (e) => act(e.target, () => loadSprint(true)));
+
+// ---- Runs ----
+function drawRuns() {
+  const tickets = overview.tickets;
+  $("n-runs").textContent = String(tickets.filter((t) => t.state === "running" || t.state === "waiting_approval").length);
+  $("run-rows").replaceChildren(...tickets.map((t) => el("tr", { class: "click", onclick: () => openTicket(t.id) },
+    el("td", {}, el("strong", {}, t.cid), " ", t.title), el("td", {}, chip(t)), el("td", {}, t.phase),
+    el("td", {}, runningStep(t)?.name || ""), el("td", {}, t.pr ? link(t.pr, "PR") : ""), el("td", {}, ago(t.updated)))));
+}
+$("run-start").addEventListener("click", (e) => act(e.target, async () => { const ref = $("run-ref").value.trim(); if (!ref) throw new Error("enter a ticket"); const r = await api(`/api/tickets/${encodeURIComponent(ref)}/start`, { gate: true }); openTicket(r.ticketId); }));
+
+// ---- Ticket detail with a live step ----
+let openId = null, source = null, liveFor = null;
+function closeDetail() { openId = null; liveFor = null; source?.close(); source = null; $("main").classList.remove("open"); }
+async function openTicket(ticketId) { openId = ticketId; $("main").classList.add("open"); await drawDetail(true); }
+async function drawDetail(force) {
+  if (!openId) return;
+  let data;
+  try { data = await api(`/api/tickets/${encodeURIComponent(openId)}`); } catch (e) { $("detail").replaceChildren(el("div", { class: "error" }, e.message)); return; }
+  const t = data.ticket;
+  const box = [];
+  box.push(el("div", { class: "bar" }, el("h2", {}, `${t.cid} ${t.title}`), el("span", { class: "grow" }), el("button", { class: "act", onclick: closeDetail }, "Close")));
+  box.push(el("div", { class: "bar" }, chip(t), el("span", { class: "muted" }, t.phase), t.url ? link(t.url, "ticket") : null, t.pr ? link(t.pr, "pull request") : null, t.source ? link(t.source.permalink, `Sentry ${t.source.shortId}`) : null));
+  if (t.blocked) box.push(el("div", { class: "error" }, t.blocked));
+  const live = t.state === "running" || t.state === "queued" || t.state === "waiting_approval";
+  const buttons = el("div", { class: "bar" });
+  if (live) buttons.append(el("button", { class: "act", onclick: (e) => act(e.target, () => api(`/api/tickets/${t.id}/stop`, {})) }, "Stop"));
+  else buttons.append(el("button", { class: "act", onclick: (e) => act(e.target, () => api(`/api/tickets/${t.id}/start`, { gate: true })) }, "Run again"),
+                      el("button", { class: "act", onclick: (e) => act(e.target, () => api(`/api/tickets/${t.id}/start`, { gate: true, fresh: true })) }, "Start fresh"));
+  box.push(buttons);
+  if (t.state === "waiting_approval") {
+    const note = el("textarea", { rows: 3, placeholder: "Optional note for the coder (it overrides the spec where they differ)" });
+    box.push(el("h3", {}, "Approve the spec"), note, el("div", { class: "bar", style: "margin-top:8px" },
+      el("button", { class: "act primary", onclick: (e) => act(e.target, () => api(`/api/tickets/${t.id}/approve`, { note: note.value })) }, "Approve and build")));
+  }
+  for (const [name, text] of Object.entries(data.files)) if (text) box.push(el("details", { open: name === "spec.md" && t.state === "waiting_approval" }, el("summary", {}, name), el("pre", {}, text)));
+  box.push(el("h3", {}, "Steps"), el("table", {}, el("tbody", {}, ...(t.steps || []).map((s) => el("tr", { class: "click", onclick: () => watch(t.id, s) },
+    el("td", {}, s.name), el("td", {}, el("span", { class: `chip ${s.status === "done" ? "ok" : s.status === "failed" ? "bad" : "run"}` }, s.status)), el("td", { class: "muted" }, s.model), el("td", { class: "muted" }, s.error || ""))))));
+  const liveBox = el("div", {}, el("h3", {}, "Live"), el("div", { id: "live", class: "live" }, el("span", { class: "muted" }, "Pick a step.")));
+  box.push(liveBox);
+  const step = runningStep(t);
+  if (step) {
+    const text = el("input", { type: "text", placeholder: `Steer ${step.name}: your message joins its next turn` });
+    box.push(el("div", { class: "bar", style: "margin-top:8px" }, text, el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { if (!text.value.trim()) return; await api(`/api/tickets/${t.id}/steer`, { text: text.value }); text.value = ""; flash("steer sent"); }) }, "Steer")));
+  }
+  $("detail").replaceChildren(...box);
+  const target = step || (t.steps || []).at(-1);
+  if (target && (force || liveFor !== `${t.id}:${target.conversationId}`)) watch(t.id, target);
+  else if (liveFor && lastLive) $("live").replaceChildren(...lastLive);
+}
+let lastLive = null;
+function watch(ticketId, step) {
+  source?.close();
+  liveFor = `${ticketId}:${step.conversationId}`;
+  const box = $("live"); box.replaceChildren();
+  lastLive = [];
+  let text = null;
+  const add = (node) => { lastLive.push(node); const b = $("live"); if (b) { b.append(node); b.scrollTop = b.scrollHeight; } };
+  source = new EventSource(`/api/tickets/${encodeURIComponent(ticketId)}/events?conversation=${step.conversationId}`);
+  source.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.type === "step") add(el("div", { class: "muted" }, `${e.step} on ${e.model} (${e.status})`));
+    else if (e.type === "snapshot") for (const x of e.entries) add(el("div", { class: x.kind }, x.kind === "tool" ? `→ ${x.name} ${x.args}` : x.kind === "user" ? `> ${x.text.slice(0, 600)}${x.text.length > 600 ? "…" : ""}` : x.text));
+    else if (e.type === "delta") { if (!text) { text = el("div", {}, ""); add(text); } text.textContent += e.text; }
+    else if (e.type === "text") { if (text) text.textContent = e.text; else add(el("div", {}, e.text)); text = null; }
+    else if (e.type === "tool") { text = null; add(el("div", { class: "tool" }, `→ ${e.name} ${e.args}`)); }
+    else if (e.type === "output") add(el("div", { class: "out" }, e.text.slice(-1200)));
+    else if (e.type === "retry") add(el("div", { class: "error" }, `model error, retry ${e.attempt}: ${e.error}`));
+    else if (e.type === "run_end") { text = null; add(el("div", { class: "muted" }, "— answered")); }
+  };
+}
+
+// ---- refresh ----
+async function refresh() {
+  try {
+    overview = await api("/api/overview");
+    drawSentry(); drawRuns(); drawSprint();
+    // Never redraw under your cursor: a steer or an approval note you are typing stays.
+    const typing = document.activeElement && $("detail").contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (openId && !typing) await drawDetail(false);
+    if (!$("status").classList.contains("error")) flash(`updated ${new Date().toLocaleTimeString()}`);
+  } catch (e) { flash(e.message, true); }
+}
+refresh();
+loadSprint(false);
+setInterval(refresh, 5000);
+setInterval(() => tab === "sprint" && loadSprint(false), 60000);
+</script>
+</body>
+</html>

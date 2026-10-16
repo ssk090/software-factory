@@ -8,3 +8,4 @@ __pycache__/
 credentials.json
 .DS_Store
 .ruff_cache/
+durable/node_modules

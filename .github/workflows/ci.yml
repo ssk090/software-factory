@@ -1,5 +1,6 @@
-# Every push and PR: lint, unit tests, and the whole pipeline end to end (no network: fake
-# tracker, gh and agents). The docker job also builds the image and runs agents in the sandbox.
+# Every push and PR: lint, typecheck, and the factory's tests with no network (fake tracker and git
+# host, pi-ai's faux model playing the agents). The docker job builds the image and runs a whole
+# pipeline in the docker sandbox.
 name: ci
 on:
   push:
@@ -10,36 +11,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: durable/package-lock.json
       - name: shellcheck
-        run: |
-          shellcheck -S warning -x factory.sh cell.sh docker-entrypoint.sh display/*.sh sandbox/*.sh tracker/*.sh
-          shellcheck -S warning -e SC2034 -x tests/*.sh   # test checks read variables inside eval strings
-      - name: unit tests
-        run: python3 -m unittest -v test_router
+        run: shellcheck -S warning factory.sh docker-entrypoint.sh durable/bin/ff
       - name: git identity for the scratch repos
         run: git config --global user.name ci && git config --global user.email ci@localhost && git config --global init.defaultBranch main
-      - name: e2e, pass
-        run: tests/e2e.sh none headless pass
-      - name: e2e, coder crashes
-        run: tests/e2e.sh none headless fail
-      - name: e2e, coder deletes spec tests
-        run: tests/e2e.sh none headless deltests
-      - name: e2e, coder edits a frozen spec test
-        run: tests/e2e.sh none headless edittests
-      - name: e2e, verify gate catches the coder
-        run: tests/e2e.sh none headless verify
-      - name: e2e, two tickets in parallel worktrees
-        run: tests/e2e.sh none headless parallel
+      - name: install
+        working-directory: durable
+        run: npm ci
+      - name: typecheck
+        working-directory: durable
+        run: npm run check
+      - name: tests (the docker sandbox tests run too: the runner has Docker)
+        working-directory: durable
+        run: npm test
 
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
       - name: build the image
         run: docker build -t software-factory .
+      - name: the image runs the factory
+        run: docker run --rm --entrypoint /factory/durable/bin/ff software-factory help
       - name: git identity for the scratch repos
         run: git config --global user.name ci && git config --global user.email ci@localhost && git config --global init.defaultBranch main
-      - name: e2e in the docker sandbox
-        run: tests/e2e.sh docker headless pass
-      - name: e2e in the docker sandbox, two tickets in parallel
-        run: tests/e2e.sh docker headless parallel
+      - name: a whole pipeline in the docker sandbox
+        working-directory: durable
+        env:
+          SF_DOCKER_PIPELINE: "1"
+          SANDBOX_TEST_IMAGE: software-factory
+        run: npm ci && node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/docker.test.ts

@@ -6,3 +6,4 @@ runs
 secrets
 state
 worktrees
+durable/node_modules

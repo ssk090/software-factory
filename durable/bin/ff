@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# ff: the software factory (durable/src/cli.ts). Sources config.env (settings and secrets, mode 600)
+# so its shell syntax keeps working, then runs the CLI on Node. Link it onto your PATH:
+#   ln -s "$PWD/durable/bin/ff" /usr/local/bin/ff
+set -euo pipefail
+src=${BASH_SOURCE[0]}
+while [ -L "$src" ]; do
+  dir=$(cd -P "$(dirname "$src")" && pwd); src=$(readlink "$src"); [[ $src = /* ]] || src="$dir/$src"
+done
+durable=$(cd -P "$(dirname "$src")/.." && pwd)
+config="${FACTORY_CONFIG:-$(dirname "$durable")/config.env}"
+set -a; [ -f "$config" ] && . "$config"; set +a
+[ -d "$durable/node_modules/@earendil-works/pi-durable" ] || { echo "ff: run npm ci in $durable first" >&2; exit 3; }
+# node:sqlite and type stripping print an ExperimentalWarning on every start.
+exec node --disable-warning=ExperimentalWarning "$durable/src/cli.ts" "$@"

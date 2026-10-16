@@ -1,4 +1,5 @@
-# Everything the factory needs, so any machine with Docker can run it.
+# Everything the factory needs, so any machine with Docker can run it. The same image is the
+# sandbox: in SANDBOX=docker each ticket's agent commands run in a container of it.
 FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -8,19 +9,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/* \
     && corepack enable \
-    # Docker client only: on a server the factory starts one agent container per step on the host's Docker
+    # Docker client only: on a server the factory starts one sandbox container per ticket on the host's Docker
     && curl -fsSL "https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.5.1.tgz" \
-       | tar xz --strip-components=1 -C /usr/local/bin docker/docker
+       | tar xz --strip-components=1 -C /usr/local/bin docker/docker \
+    # Pi Durable needs Node 22.19 or newer
+    && node -e 'const [a, b] = process.versions.node.split(".").map(Number); if (a < 22 || (a === 22 && b < 19)) { console.error(`node ${process.versions.node} is too old`); process.exit(1); }'
 
-# Agent CLIs used by router.json: Codex, Claude Code, OpenCode, pi (npm) and Cursor (its installer).
-# Pinned, so a rebuild gets the CLIs that were tested. To upgrade: bump a version, rebuild, run
-# tests/e2e.sh docker. Cursor's installer has no version pin.
-ARG AGENT_PACKAGES="@openai/codex@0.162.1 @anthropic-ai/claude-code@2.1.300 opencode-ai@1.19.0 @earendil-works/pi-coding-agent@1.2.0"
-RUN npm install -g $AGENT_PACKAGES \
-    && curl -fsSL https://cursor.com/install | bash
-ENV PATH="/root/.local/bin:$PATH"
+# The factory's core: Pi Durable and pi-ai, pinned by durable/package-lock.json.
+COPY durable/package.json durable/package-lock.json /factory/durable/
+RUN cd /factory/durable && npm ci --omit=dev --no-audit --no-fund
 
 COPY . /factory
 WORKDIR /factory
+RUN ln -s /factory/durable/bin/ff /usr/local/bin/ff
 ENTRYPOINT ["/factory/docker-entrypoint.sh"]
-CMD ["daemon"]
+CMD ["serve"]

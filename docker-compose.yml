@@ -1,35 +1,37 @@
-# Server mode. The factory container is the orchestrator. Each agent step runs in its own
-# sibling container on the host's Docker (SANDBOX=docker), so the data folder is mounted at
-# the SAME path inside and outside: those sibling containers are given host paths.
+# Server mode. The factory container owns the factory's Pi Durable session and serves the dashboard.
+# In SANDBOX=docker each ticket's agent commands run in a sibling container on the host's Docker, so
+# the data folder is mounted at the SAME path inside and outside: those containers get host paths.
 services:
   factory:
     build: .
-    image: software-factory          # also the image each agent container uses
+    image: software-factory          # also the image each ticket's sandbox container uses
     restart: unless-stopped
-    init: true                       # PID 1 that passes docker stop's TERM on to the daemon
-    # On docker stop the daemon stops the running ticket and its agent containers; the ticket
-    # stays claimed and resumes from its journal when the container starts again.
+    init: true                       # PID 1 that passes docker stop's TERM on to ff serve
+    # On docker stop the factory closes its session; every ticket continues from its last
+    # checkpoint (mid agent step) when the container starts again.
     stop_grace_period: 60s
     environment:
       # The one settings + secrets file, kept in the data folder: copy config.example.env there.
-      # Leave REPO, DATA_DIR, AUTH_HOME and SANDBOX out of it: they are set here.
+      # Leave REPO, DATA_DIR, SANDBOX and DASH_HOST out of it: they are set here.
       FACTORY_CONFIG: ${FACTORY_DATA:-/srv/factory}/config.env
       DATA_DIR: ${FACTORY_DATA:-/srv/factory}
       REPO: ${FACTORY_DATA:-/srv/factory}/repo
-      # Agent CLI login files, laid out like a home folder: secrets/home/.codex/auth.json, ...
-      AUTH_HOME: ${FACTORY_DATA:-/srv/factory}/secrets/home
       SANDBOX: docker
+      # Listen on the container's network; the port below is published on the host's loopback
+      # only. A non-loopback DASH_HOST needs DASH_PASSWORD in config.env (basic auth).
+      DASH_HOST: 0.0.0.0
+      DASH_PORT: "8090"
+    ports:
+      - "127.0.0.1:8090:8090"        # the dashboard: ssh -L 8090:127.0.0.1:8090 <server>
     volumes:
       - ${FACTORY_DATA:-/srv/factory}:${FACTORY_DATA:-/srv/factory}
-      - /var/run/docker.sock:/var/run/docker.sock   # lets the factory start agent containers
-    healthcheck:                     # daemon alive and the host's Docker reachable
-      test: ["CMD", "/factory/factory.sh", "health"]
+      - /var/run/docker.sock:/var/run/docker.sock   # lets the factory start sandbox containers
+    healthcheck:                     # the factory serves and answers
+      test: ["CMD", "/factory/durable/bin/ff", "health"]
       interval: 60s
       timeout: 20s
-      start_period: 120s             # the first start clones the repo and runs ff doctor
+      start_period: 120s             # the first start clones the repo
       retries: 3
-    logging:                         # the daemon logs forever: keep the last 50 MB
+    logging:                         # the factory logs forever: keep the last 50 MB
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
-    stdin_open: true
-    tty: true
