@@ -16,11 +16,16 @@ export const READERS = new Set(["spec", "plan", "review", "judge"]);
 const FILE_TOOLS = new Set(["read", "write", "edit"]);
 /** Only the factory pushes, and only to the ticket's branch. */
 const GIT_PUSH = /\bgit\b(?:\s+-[cC]\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+push\b/;
+/** The repo's git hooks are its checks: no agent turns them off. */
+export const HOOK_BYPASS = /--no-verify\b|\b(?:HUSKY|LEFTHOOK)=0\b|\bSKIP_SIMPLE_GIT_HOOKS=1\b|\bcore\.hooksPath\b|\bgit\s+commit\b[^|;&\n]*\s-[a-zA-Z]*n[a-zA-Z]*(?=\s|$)/;
+/** Files that hold the factory's or the machine's secrets: no agent reads them. */
+export const SECRET_PATHS = /(?:^|[\s"'=:/])(?:config\.env|\.ssh\/|\.aws\/credentials|\.netrc|\.git-credentials|dash\.token|factory\.sqlite|\.docker\/config\.json|\.config\/gh\/hosts\.yml)/;
 
 /**
  * The guard (a beforeTool hook): file tools stay inside the ticket's worktree and run folder (after
  * resolving symlinks), readers write only into the run folder, and no agent pushes. A role in
- * STE_ROLES cannot write prose that breaks a hard Simplified Technical English rule (ste.ts). Git refs
+ * STE_ROLES cannot write prose that breaks a hard Simplified Technical English rule (ste.ts). No agent
+ * turns off git hooks or reads a file that holds secrets (bash). Git refs
  * are guarded separately by the ticket's reference-transaction hook (git.ts).
  */
 export const FactoryAgent = defineExtension({
@@ -42,7 +47,10 @@ export const FactoryAgent = defineExtension({
 				const args = call.arguments as Record<string, unknown>;
 				if (call.name === "bash") {
 					const command = typeof args.command === "string" ? args.command : "";
-					return GIT_PUSH.test(command) ? { block: "Only the factory pushes. Commit on your branch; the factory pushes it." } : undefined;
+					if (GIT_PUSH.test(command)) return { block: "Only the factory pushes. Commit on your branch; the factory pushes it." };
+					if (HOOK_BYPASS.test(command)) return { block: "Do not turn off the repo's git hooks (--no-verify, -n, HUSKY=0, core.hooksPath): they are its checks. Fix what they report." };
+					if (SECRET_PATHS.test(command)) return { block: "That file holds secrets. Agents never read it." };
+					return undefined;
 				}
 				if (!FILE_TOOLS.has(call.name)) return undefined;
 				const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : "";
@@ -81,6 +89,8 @@ export async function buildPrompt(options: {
 	portSpan: number;
 	repoSkillDirs: readonly string[];
 	skillsPath: readonly string[];
+	/** Lessons from earlier failures for this role (lessons.ts), or "". */
+	lessons?: string;
 	log: (line: string) => void;
 }): Promise<string> {
 	const { header, body } = await readAgentFile(options.here, options.role);
@@ -96,7 +106,7 @@ export async function buildPrompt(options: {
 	});
 	const ste = steRoles().has(options.role) ? `\n${stePrompt()}\n\nThe factory checks every prose file you write against these rules. A write that breaks a hard rule is blocked, and the block names each fault. Text in code blocks (also Mermaid) is not checked.\n` : "";
 	return `${body.trim()}
-${skills}${ste}
+${skills}${ste}${options.lessons ?? ""}
 Isolation: you are one of several agents working on different tickets at the same time, each in its own git worktree. Work only in your cwd (this ticket's worktree on branch ${options.branch}) and RUN_DIR. Do not read or change other worktrees. Do not use git stash (one stash is shared by every worktree), and do not create, switch, move or delete branches or tags: a git hook refuses it. A server or container you start must use ports PORT_BASE to PORT_BASE+${options.portSpan - 1} (PORT_BASE=${options.portBase}, PORT is set to it) and the compose project in COMPOSE_PROJECT_NAME, and you must stop it before you finish.
 
 Context: RUN_DIR=${options.run} TICKET=${options.cid} BASE=origin/${options.base} ROUND=${options.round} PR=${options.pr ?? "none yet"} VERIFY_CMD=${options.verifyCmd || "<none, use the repo documented checks>"}. Do your job now.`;

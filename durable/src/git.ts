@@ -176,6 +176,15 @@ if [ "$1" = prepared ] && [ "$here" = "$COMMON" ]; then
     [ -n "$ref" ] || continue
     case $ref in
       "refs/heads/$BR"|refs/remotes/*|refs/rewritten/*|refs/worktree/*|refs/bisect/*) ;;
+      refs/stash)
+        # lint-staged (a pre-commit hook) keeps a backup in the stash and drops it again: allow that
+        # entry, and only that one. Any other stash stays off limits.
+        ok=
+        for c in "$new" "$old"; do
+          case $c in *[!0]*) ;; *) continue ;; esac
+          case $(git log -1 --format=%s "$c" 2>/dev/null) in *"lint-staged automatic backup"*) ok=1 ;; esac
+        done
+        [ -n "$ok" ] || bad="$bad $ref" ;;
       refs/*|worktrees/*|main-worktree/*) bad="$bad $ref" ;;
       *) ;;   # HEAD, ORIG_HEAD and other pseudo refs of this worktree
     esac
@@ -183,7 +192,7 @@ if [ "$1" = prepared ] && [ "$here" = "$COMMON" ]; then
 $in
 EOT
   if [ -n "$bad" ]; then
-    echo "software-factory: refused to change$bad. This agent works only on branch $BR: other tickets' branches, the base branch, tags and git stash are off limits (the stash is shared by every worktree). Commit on $BR instead." >&2
+    echo "software-factory: refused to change$bad. This agent works only on branch $BR: other tickets' branches, the base branch, tags and git stash are off limits (the stash is shared by every worktree; only lint-staged's own backup is allowed). Commit on $BR instead." >&2
     echo "$(date '+%F %T')$bad" >>"$LOG"
     exit 1
   fi
