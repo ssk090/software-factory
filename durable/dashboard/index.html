@@ -19,6 +19,7 @@
     --destructive: oklch(0.577 0.245 27.325);
     --border: oklch(0.922 0 0); --input: oklch(0.922 0 0); --ring: oklch(0.708 0 0);
     --success: oklch(0.527 0.154 150.069); --warning: oklch(0.555 0.163 48.998); --info: oklch(0.488 0.243 264.376);
+    --violet: oklch(0.541 0.247 293.009); --teal: oklch(0.511 0.096 186.391);
     --sidebar: oklch(0.985 0 0); --sidebar-foreground: oklch(0.145 0 0); --sidebar-accent: oklch(0.97 0 0); --sidebar-border: oklch(0.922 0 0);
   }
   @media (prefers-color-scheme: dark) {
@@ -32,6 +33,7 @@
       --destructive: oklch(0.704 0.191 22.216);
       --border: oklch(1 0 0 / 10%); --input: oklch(1 0 0 / 15%); --ring: oklch(0.556 0 0);
       --success: oklch(0.723 0.219 149.579); --warning: oklch(0.769 0.188 70.08); --info: oklch(0.623 0.214 259.815);
+      --violet: oklch(0.702 0.183 293.541); --teal: oklch(0.777 0.152 181.912);
       --sidebar: oklch(0.205 0 0); --sidebar-foreground: oklch(0.985 0 0); --sidebar-accent: oklch(0.269 0 0); --sidebar-border: oklch(1 0 0 / 10%);
     }
   }
@@ -130,10 +132,29 @@
   /* Code and the live feed: shadcn muted surface */
   pre, .live { margin: 0; background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-md); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
   pre { padding: 12px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-  .live { max-height: 420px; overflow: auto; padding: 8px; }
-  .live .tool { color: var(--info); } .live .user, .live .out { color: var(--muted-foreground); }
-  .live .out { white-space: pre-wrap; }
-  .live .error { color: var(--destructive); }
+  .live { display: flex; flex-direction: column; gap: 6px; max-height: 460px; overflow: auto; padding: 8px; }
+  /* Live blocks: one box per message or tool call, each kind in its own light shade */
+  /* oklab, not oklch: mixed with a grey, oklch takes the grey's hue (0, red) and every shade turns pink */
+  .lb { --c: var(--muted-foreground); padding: 6px 9px; border: 1px solid color-mix(in oklab, var(--c) 30%, var(--border)); border-radius: var(--radius-md); background: color-mix(in oklab, var(--c) 9%, var(--card)); animation: fade-up 0.18s ease-out; }
+  .lb-head { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 3px; font: 600 11px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0.02em; color: var(--c); }
+  .lb-tag { white-space: nowrap; text-transform: uppercase; }
+  .lb-meta { min-width: 0; overflow: hidden; color: var(--muted-foreground); font: 400 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }
+  .lb-state { margin-left: auto; font-weight: 500; white-space: nowrap; text-transform: none; }
+  .lb-body { color: var(--foreground); white-space: pre-wrap; word-break: break-word; }
+  .lb-body:empty { display: none; }
+  .lb-out { max-height: 220px; margin-top: 5px; padding: 6px 8px; overflow: auto; border-radius: var(--radius-sm); background: color-mix(in oklab, var(--background) 65%, transparent); color: var(--muted-foreground); white-space: pre-wrap; word-break: break-word; }
+  .lb-out:empty { display: none; }
+  .lb details summary { color: var(--muted-foreground); font: 400 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .lb details { padding: 0; border: 0; }
+  .lb-agent { --c: var(--info); }
+  .lb-bash { --c: var(--warning); }
+  .lb-read { --c: var(--success); }
+  .lb-write { --c: var(--violet); }
+  .lb-steer { --c: var(--teal); }
+  .lb-error { --c: var(--destructive); }
+  .lb-prompt, .lb-tool, .lb-note { --c: var(--muted-foreground); }
+  .lb-note { padding: 2px 9px; border-style: dashed; background: none; color: var(--muted-foreground); font-size: 11.5px; }
+  .lb.running .lb-state::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: var(--c); vertical-align: 1px; animation: pulse 2s ease-out infinite; }
   details { border-top: 1px solid var(--border); padding: 8px 0; }
   details summary { cursor: pointer; font-weight: 500; border-radius: var(--radius-sm); }
 
@@ -204,6 +225,23 @@
   .tl-step .meta { margin-left: auto; font-size: 12px; color: var(--muted-foreground); white-space: nowrap; font-variant-numeric: tabular-nums; }
   .tl-note { margin-top: 4px; font-size: 12px; color: var(--muted-foreground); }
   .tl-note.warn { color: var(--warning); } .tl-note.error { color: var(--destructive); }
+  /* A message in the timeline: its own block, shaded by its level */
+  .tl-msg { --c: var(--muted-foreground); padding: 6px 9px; border: 1px solid color-mix(in oklab, var(--c) 28%, var(--border)); border-radius: var(--radius-md); background: color-mix(in oklab, var(--c) 6%, var(--card)); font-size: 12.5px; }
+  .tl-msg.warn { --c: var(--warning); } .tl-msg.error { --c: var(--destructive); }
+  .tl-msg.k-repair { --c: var(--violet); } .tl-msg.k-lesson { --c: var(--teal); }
+  .tl-msg.error.k-repair { --c: var(--destructive); }
+  .tl-msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; font-size: 11px; }
+  .tl-msg-tag { font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--c); }
+  .tl-msg-time { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  .tl-msg-more { margin-left: auto; padding: 0 4px; border: 0; background: none; color: var(--info); font: inherit; cursor: pointer; }
+  .tl-msg.result.ok { --c: var(--success); }
+  .tl-msg.result { padding: 10px 12px; }
+  .result-title { font-size: 14px; font-weight: 600; color: var(--foreground); }
+  .result-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: 12.5px; }
+  .result-facts a { font-weight: 600; }
+  .result-sum { margin-top: 6px; color: var(--muted-foreground); font-size: 12.5px; }
+  .tl-msg-body { color: var(--foreground); white-space: pre-wrap; word-break: break-word; }
+  .tl-msg-body.folded { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   /* Documents: cards in the approval box, and the reader (shadcn Dialog) with rendered Markdown */
   .approve { margin-bottom: 4px; }
   .approve p { margin: 0 0 10px; font-size: 13px; }
@@ -264,6 +302,69 @@
   .tl-step .model { flex-shrink: 1; min-width: 4ch; }
   #doc-tabs:empty { display: none; }
 
+  /* Diff drawer: what one agent step changed (shadcn Sheet, code lines after px0) */
+  dialog.sheet { display: none; flex-direction: column; position: fixed; inset: 0 0 0 auto; width: min(1120px, 96vw); max-width: none; height: 100vh; max-height: none; margin: 0; padding: 0; border: 0; border-left: 1px solid var(--border); background: var(--card); color: var(--card-foreground); box-shadow: -16px 0 48px -12px rgb(0 0 0 / 0.35); }
+  dialog.sheet[open] { display: flex; animation: sheet-in 0.22s ease-out; }
+  dialog.sheet::backdrop { background: rgb(0 0 0 / 0.4); }
+  @keyframes sheet-in { from { opacity: 0; transform: translateX(28px); } }
+  .sheet-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px 12px; border-bottom: 1px solid var(--border); }
+  .sheet-head h2 { margin-bottom: 6px; }
+  .sheet-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted-foreground); }
+  .sheet-sub code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .commits { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; font-size: 12px; }
+  .commits span.sha { margin-right: 6px; color: var(--violet); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .sheet-main { display: grid; flex: 1; grid-template-columns: 270px minmax(0, 1fr); min-height: 0; }
+  .diff-nav { overflow: auto; padding: 8px; border-right: 1px solid var(--border); }
+  .diff-nav .file { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: inherit; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; cursor: pointer; transition: background-color 0.15s; }
+  .diff-nav .file:hover, .diff-nav .file.on { background: var(--muted); }
+  .fs { width: 1.2ch; flex: none; font-weight: 700; }
+  .fs.A { color: var(--success); } .fs.D { color: var(--destructive); } .fs.M { color: var(--warning); } .fs.R { color: var(--info); }
+  .fpath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fpath .dir { color: var(--muted-foreground); }
+  .fstat { flex: none; font-size: 11px; white-space: nowrap; }
+  .fstat .a, .dfile-head .a { color: var(--success); } .fstat .d, .dfile-head .d { color: var(--destructive); }
+  .diff-view { overflow: auto; padding: 12px 16px 40px; }
+  .dfile { margin-bottom: 14px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); animation: fade-up 0.18s ease-out; }
+  .dfile-head { position: sticky; top: -12px; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--muted) 85%, var(--card)); font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; }
+  .dfile.closed .dfile-head { border-bottom: 0; }
+  .dfile-head .twist { width: 1ch; color: var(--muted-foreground); transition: transform 0.15s; }
+  .dfile:not(.closed) .dfile-head .twist { transform: rotate(90deg); }
+  .dfile-body { overflow-x: auto; }
+  .dfile.closed .dfile-body { display: none; }
+  table.code { width: 100%; border-collapse: collapse; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  table.code td { height: auto; padding: 0 8px; border: 0; vertical-align: top; font-size: 12px; }
+  table.code tbody tr:hover { background: none; }
+  table.code td.ln { width: 1%; padding: 0 6px; color: var(--muted-foreground); text-align: right; white-space: nowrap; user-select: none; font-variant-numeric: tabular-nums; }
+  table.code td.sg { width: 1%; padding: 0 4px; color: var(--muted-foreground); user-select: none; }
+  table.code td.tx { white-space: pre; }
+  table.code tr.add { background: color-mix(in oklab, var(--success) 11%, transparent); }
+  table.code tr.add td.ln { background: color-mix(in oklab, var(--success) 18%, transparent); }
+  table.code tr.add td.sg { color: var(--success); }
+  table.code tr.del { background: color-mix(in oklab, var(--destructive) 10%, transparent); }
+  table.code tr.del td.ln { background: color-mix(in oklab, var(--destructive) 17%, transparent); }
+  table.code tr.del td.sg { color: var(--destructive); }
+  table.code tr.hunk td { padding: 3px 10px; background: color-mix(in oklab, var(--info) 8%, transparent); color: var(--muted-foreground); }
+  table.code tr.note td { color: var(--muted-foreground); font-style: italic; }
+  .tok-k { color: var(--violet); } .tok-s { color: var(--teal); } .tok-c { color: var(--muted-foreground); font-style: italic; } .tok-n { color: var(--warning); }
+  .dfile-more { padding: 10px; color: var(--muted-foreground); font-size: 12px; text-align: center; }
+  .tl-step .diffhint { font-size: 12px; color: var(--violet); white-space: nowrap; }
+  /* The code the agent is typing now (its write or edit call, streamed from the model) */
+  .dfile.pending { border-color: color-mix(in oklab, var(--info) 45%, var(--border)); }
+  .dfile.pending .dfile-head { background: color-mix(in oklab, var(--info) 10%, var(--card)); cursor: default; }
+  .dfile.pending tbody tr:last-child td.tx::after, .lb.writing .lb-code tbody tr:last-child td.tx::after { content: ""; display: inline-block; width: 7px; height: 1.1em; margin-left: 1px; vertical-align: text-bottom; background: var(--info); animation: caret 1s steps(1) infinite; }
+  /* Word emphasis on a changed line (the words that changed, after pi-code-previews) */
+  table.code tr.add .wd { border-radius: 2px; background: color-mix(in oklab, var(--success) 30%, transparent); }
+  table.code tr.del .wd { border-radius: 2px; background: color-mix(in oklab, var(--destructive) 28%, transparent); }
+  /* Previews inside the Live blocks: an edit as a small diff, a write's first lines, grep by file */
+  .lb-code { margin-top: 4px; overflow-x: auto; border-radius: var(--radius-sm); background: color-mix(in oklab, var(--background) 65%, transparent); }
+  .lb-code table.code td { line-height: 1.5; }
+  .lb-flag { padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; text-transform: none; letter-spacing: 0; }
+  .lb-flag.risky { background: color-mix(in oklab, var(--destructive) 16%, transparent); color: var(--destructive); }
+  .lb-flag.secret { background: color-mix(in oklab, var(--warning) 18%, transparent); color: var(--warning); }
+  .lb-grep-file { margin-top: 4px; color: var(--c); font-weight: 600; }
+  .lb-grep-line { display: flex; gap: 8px; }
+  .lb-grep-line .n { min-width: 4ch; color: var(--muted-foreground); text-align: right; }
+
   /* Mermaid diagrams in the reader */
   .mermaid-box { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--background); overflow-x: auto; text-align: center; }
   .mermaid-box svg { max-width: 100%; height: auto; }
@@ -299,6 +400,12 @@
   .stage.stopped .stage-bar { background: var(--muted-foreground); }
   .stage.skipped .stage-bar { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
   .stage.skipped .stage-name { opacity: 0.6; text-decoration: line-through; }
+  .stage-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; }
+  .stage .stage-parts .stage-bar { border-radius: 0; }
+  .stage .stage-parts .stage-bar:first-child { border-radius: 999px 0 0 999px; }
+  .stage .stage-parts .stage-bar:last-child { border-radius: 0 999px 999px 0; }
+  .stage .stage-bar.part.next { background: var(--muted); animation: none; box-shadow: none; }
+  .stage .stage-bar.part.done { background: var(--success); animation: none; box-shadow: none; }
   .stage-now { margin-top: 14px; }
   .stage-title { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
   .stage-sub { margin-top: 2px; font-size: 13px; color: var(--muted-foreground); }
@@ -421,6 +528,13 @@
     <div class="suggest-foot"><span class="suggest-who" id="suggest-who"></span><span class="grow"></span><button class="act sm" id="suggest-cancel">Cancel</button><button class="act sm primary" id="suggest-send">Send</button></div>
   </div>
   <div class="doc-foot" id="doc-foot" hidden><span class="muted" id="doc-foot-text"></span><span class="grow"></span><button class="act primary" id="doc-approve">Approve and build</button></div>
+</dialog>
+<dialog class="sheet" id="diff" aria-labelledby="diff-title">
+  <div class="sheet-head">
+    <div style="flex:1;min-width:0"><h2 id="diff-title">Changes</h2><div class="sheet-sub" id="diff-sub"></div><div class="commits" id="diff-commits"></div></div>
+    <button class="row-icon" id="diff-close" aria-label="Close"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+  </div>
+  <div class="sheet-main"><nav class="diff-nav" id="diff-files" aria-label="Changed files"></nav><div class="diff-view" id="diff-view"><div id="diff-pending"></div><div id="diff-body"></div></div></div>
 </dialog>
 <div id="toasts" aria-live="polite"></div>
 <script>
@@ -624,7 +738,7 @@ const LEVEL = { info: "", warn: "warn", error: "bad" };
 const NOTE = new Set(["verify", "review", "pr", "gate", "control", "budget", "git", "run", "repair", "lesson", "guard"]);
 function closeDetail() { openId = null; liveFor = null; lastSig = ""; source?.close(); source = null; $("main").classList.remove("open"); connect(); }
 async function openTicket(ticketId) {
-  if (openId !== ticketId) { detailSeen = new Set(); detailTab = "timeline"; lastLive = null; liveFor = null; }
+  if (openId !== ticketId) { detailSeen = new Set(); notesOpen = new Set(); detailTab = "timeline"; lastLive = null; liveFor = null; }
   openId = ticketId; lastSig = "";
   $("main").classList.add("open");
   replay($("detail"), "panel-in");
@@ -640,12 +754,20 @@ const STAGES = [
   { label: "Approval", phases: ["gate"] },
   { label: "Tests", phases: ["setup", "verify-base", "test"] },
   { label: "Fix", phases: ["code", "verify-code", "docs"] },
-  { label: "Pull request", phases: ["pr-summary", "pr", "review", "fix", "push-fix", "pr-summary-2", "judge"] },
+  // One pill in three parts: opening the PR, the first review, then the fixes and the second review (or the judge).
+  { label: "Pull request", phases: ["pr-summary", "pr", "review", "fix", "push-fix", "pr-summary-2", "judge"],
+    parts: [{ label: "Pull request" }, { label: "Review" }, { label: "Review 2" }] },
   { label: "Ready", phases: ["report"] },
 ];
 /** The events of the ticket's latest run (a ticket that ran again keeps the earlier ones in its log). */
 const latestRun = (events) => { const i = events.findLastIndex((e) => e.kind === "run" && /^Run started/.test(e.text)); return i < 0 ? events : events.slice(i); };
 
+/** Which part of a split stage the run is in: 0 opening the PR, 1 the first review, 2 the fixes, the second review, the judge. */
+function prPart(events, phase) {
+  if (phase === "pr-summary" || phase === "pr") return 0;
+  const fixed = events.some((e) => e.kind === "phase" && (e.phase === "fix" || e.phase === "push-fix"));
+  return phase === "review" && !fixed ? 1 : 2;
+}
 function stagesView(t) {
   const events = latestRun(t.events || []);
   const started = events[0]?.kind === "run" ? events[0].text : "";
@@ -666,13 +788,25 @@ function stagesView(t) {
     : repairing ? `Something failed at: ${phaseLabel(phase)}. The coordinator (${step?.name ?? "coordinate"}) is fixing it`
     : t.state === "waiting_approval" ? "Waiting for your approval of the spec"
     : `${phaseLabel(phase)}${step ? ` · ${step.name} on ${step.model.split("/").pop()}` : ""}${since ? ` · ${span(Date.now() - since)}` : ""}`;
+  const animate = (bar, state) => {
+    if (state === "current" || state === "repairing") inPhase(bar, 900, 2000); else if (state === "waiting") inPhase(bar, 2400); else if (state === "failed") inPhase(bar, 2000);
+    return bar;
+  };
+  // A split stage: the parts before the current one are done, the current one has the stage's state.
+  const part = prPart(events, phase);
+  const partOf = (x, i) => (x.parts && i === cur ? x.parts[part] : null);
   const track = el("div", { class: "stage-track" }, ...STAGES.map((x, i) => {
     const state = stateOf(i);
-    const bar = el("div", { class: "stage-bar" });
-    if (state === "current" || state === "repairing") inPhase(bar, 900, 2000); else if (state === "waiting") inPhase(bar, 2400); else if (state === "failed") inPhase(bar, 2000);
-    return el("div", { class: `stage ${state}`, title: `${name(x)}: ${x.phases.map(phaseLabel).join(", ")}${state === "skipped" ? " (skipped in this run)" : ""}` }, bar, el("div", { class: "stage-name" }, name(x)));
+    const bars = !x.parts ? animate(el("div", { class: "stage-bar" }), state)
+      : el("div", { class: "stage-parts" }, ...x.parts.map((p, j) => {
+        const ps = i !== cur || state === "done" || state === "skipped" || state === "next" ? state : j < part ? "done" : j > part ? "next" : state;
+        return animate(el("div", { class: `stage-bar part ${ps}`, title: p.label }), ps);
+      }));
+    const now = partOf(x, i);
+    return el("div", { class: `stage ${state}`, title: `${name(x)}: ${x.phases.map(phaseLabel).join(", ")}${state === "skipped" ? " (skipped in this run)" : ""}` }, bars,
+      el("div", { class: "stage-name" }, now && state !== "done" ? `${name(x)} · ${now.label}` : name(x)));
   }));
-  return el("div", { class: "stages" }, track, el("div", { class: "stage-now" }, el("div", { class: "stage-title" }, finished ? "Ready" : name(STAGES[cur])), el("div", { class: "stage-sub" }, sub)));
+  return el("div", { class: "stages" }, track, el("div", { class: "stage-now" }, el("div", { class: "stage-title" }, finished ? "Ready" : partOf(STAGES[cur], cur)?.label ?? name(STAGES[cur])), el("div", { class: "stage-sub" }, sub)));
 }
 
 function stepRow(t, s) {
@@ -681,22 +815,98 @@ function stepRow(t, s) {
   const took = (s.ended ?? Date.now()) - s.started - (s.pausedMs || 0) - pausing;
   const u = s.usage;
   const writesDoc = s.role === "spec" || s.role === "plan";
+  // A finished reviewer or judge opens what it wrote (review-N.md, judge.txt), with the run's other reviews as tabs.
+  const written = s.status !== "running" ? REPORT_OF[s.role]?.(s) : null;
+  const report = written && detailFiles[written] ? written : null;
   const look = () => {
+    if (report) {
+      const names = Object.keys(detailFiles).filter((n) => detailFiles[n] && /^review-\d+\.md$|^judge\.txt$/.test(n)).sort((a, b) => (a === "judge.txt") - (b === "judge.txt") || a.localeCompare(b, undefined, { numeric: true }));
+      openDoc(t, detailFiles, names, report);
+      return;
+    }
     watch(t.id, s);
     for (const r of document.querySelectorAll(".tl-step")) r.classList.toggle("watching", r.dataset.conv === String(s.conversationId));
     if (writesDoc) openStepDoc(t, s, detailFiles); // the spec or plan, live while it is written
+    else if (CODE_ROLES.has(s.role)) openDiff(t, s); // what the step changed, live while it runs
   };
   const running = s.status === "running";
   const failed = s.status === "failed";
   // A crash pulses while it is the newest step and the ticket is stuck on it (blocked, or being repaired).
   const now = failed && (t.steps || []).at(-1)?.name === s.name;
-  return el("div", { class: `tl-step${running ? " running" : ""}${failed ? " failed" : ""}${running && t.paused ? " held" : ""}${liveFor === `${t.id}:${s.conversationId}` ? " watching" : ""}`, role: "button", tabindex: "0", "data-conv": s.conversationId, title: s.error || (writesDoc ? `Open ${docFor(s.role)}${running ? ", live as it is written" : ""}` : "Watch this step live"), onclick: look, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); look(); } } },
+  return el("div", { class: `tl-step${running ? " running" : ""}${failed ? " failed" : ""}${running && t.paused ? " held" : ""}${liveFor === `${t.id}:${s.conversationId}` ? " watching" : ""}`, role: "button", tabindex: "0", "data-conv": s.conversationId, title: s.error || (report ? `Open ${report}` : writesDoc ? `Open ${docFor(s.role)}${running ? ", live as it is written" : ""}` : CODE_ROLES.has(s.role) ? `Open what ${s.name} changed` : "Watch this step live"), onclick: look, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); look(); } } },
     running ? inPhase(el("span", { class: "live-dot", "aria-hidden": "true" }), 2000)
       : failed ? inPhase(el("span", { class: `live-dot bad${now ? " now" : ""}`, "aria-hidden": "true" }), 1600) : null,
     el("span", { class: `chip sm ${s.status === "done" ? "ok" : s.status === "failed" ? "bad" : t.paused ? "warn" : "run"}` }, running && t.paused ? "paused" : s.status),
     el("span", { class: "name" }, s.name), el("span", { class: "model", title: s.model }, s.model.split("/").pop()),
-    writesDoc ? el("span", { class: "preview", title: `Open ${docFor(s.role)}${running ? ", live as it is written" : ""}` }, running ? "Live" : "Preview") : null,
+    report ? el("span", { class: "preview", title: `Open ${report}` }, s.role === "judge" ? "Verdict" : "Review")
+      : writesDoc ? el("span", { class: "preview", title: `Open ${docFor(s.role)}${running ? ", live as it is written" : ""}` }, running ? "Live" : "Preview")
+      : CODE_ROLES.has(s.role) ? el("span", { class: "diffhint", title: `What ${s.name} changed${running ? ", live" : ""}` }, "Diff") : null,
     el("span", { class: "meta" }, [span(took), u && u.tokens ? `${tokens(u.tokens)} tokens` : null, u && u.cost ? money(u.cost) : null].filter(Boolean).join(" · ")));
+}
+
+/** A check the factory runs itself (the repo's pre-push hook) as a row like a step's: its start event and how it ended. */
+const HOOK_START = /^Pre-push hook running/;
+function hookRows(t, events) {
+  const hooks = events.filter((e) => e.kind === "hook");
+  return hooks.flatMap((start, i) => {
+    // Turned off (PRE_PUSH=0): a row of its own, nothing ran.
+    if (/^Pre-push hook skipped/.test(start.text)) return [{ at: start.at, node: el("div", { class: "tl-step", title: start.text },
+      el("span", { class: "chip sm warn" }, "skipped"), el("span", { class: "name" }, "pre-push hook"), el("span", { class: "model" }, "PRE_PUSH=0")) }];
+    if (!HOOK_START.test(start.text)) return [];
+    const end = hooks[i + 1] && !HOOK_START.test(hooks[i + 1].text) ? hooks[i + 1] : null;
+    // No end yet: running while it is the ticket's latest news. A restart that cut it off leaves it
+    // without an end, and the run went on (the hook again, or the next phase): it was stopped.
+    const later = events.some((e) => e.at > start.at && (e.kind === "phase" || e.kind === "hook" || (e.kind === "run" && /^Run started|^Continues/.test(e.text))));
+    const running = !end && !later && isLive(t);
+    const status = end ? (end.level === "error" ? (/killed/.test(end.text) ? "killed" : "failed") : "passed") : running ? "running" : "stopped";
+    const failed = status === "failed" || status === "killed";
+    const pausing = running && t.paused ? Date.now() - t.paused.at : 0;
+    const took = end || running ? (end?.at ?? Date.now()) - start.at - pausing : null;
+    const open = () => openDoc(t, detailFiles, ["pre-push.log"], "pre-push.log");
+    return [{ at: start.at, node: el("div", { class: `tl-step${running ? " running" : ""}${failed ? " failed" : ""}${running && t.paused ? " held" : ""}`, role: "button", tabindex: "0", title: end ? `${end.text}. Open pre-push.log` : "Open pre-push.log", onclick: open, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } } },
+      running ? inPhase(el("span", { class: "live-dot", "aria-hidden": "true" }), 2000) : failed ? inPhase(el("span", { class: "live-dot bad", "aria-hidden": "true" }), 1600) : null,
+      el("span", { class: `chip sm ${status === "passed" ? "ok" : failed ? "bad" : status === "stopped" ? "" : t.paused ? "warn" : "run"}` }, running && t.paused ? "paused" : status),
+      el("span", { class: "name" }, "pre-push hook"), el("span", { class: "model" }, "sandbox"),
+      el("span", { class: "meta", title: took === null ? "Cut off by a factory restart: no result" : "" }, took === null ? "cut off" : span(took))) }];
+  });
+}
+
+const NOTE_LABEL = { run: "Run", repair: "Coordinator", lesson: "Lesson", verify: "Verify", review: "Review", pr: "Pull request", gate: "Approval", control: "Control", budget: "Budget", git: "Git", guard: "Guard", hook: "Hook", tracker: "Tracker", step: "Step" };
+let notesOpen = new Set();
+/** Text with its URLs as links; a GitHub PR shows as "PR #n". */
+function linked(text) {
+  return text.split(/(https?:\/\/[^\s)]+)/).map((part, i) => i % 2 === 0 ? part
+    : link(part, /github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/.exec(part) ? `PR #${/pull\/(\d+)/.exec(part)[1]}` : part));
+}
+/** The run's end ("Done: ..."): what came out, the PR, the AI review and the judge. */
+function resultCard(t, n) {
+  const draft = n.level === "warn";
+  const last = (t.reviews || []).at(-1);
+  const pr = t.pr && /pull\/(\d+)/.exec(t.pr);
+  return el("div", { class: `tl-msg result ${draft ? "warn" : "ok"}` },
+    el("div", { class: "tl-msg-head" }, el("span", { class: "tl-msg-tag" }, "Done"), el("span", { class: "tl-msg-time" }, clock(n.at))),
+    el("div", { class: "result-title" }, draft ? "The PR stays a draft: review findings remain" : "PR ready for human review"),
+    el("div", { class: "result-facts" },
+      t.pr ? link(t.pr, pr ? `PR #${pr[1]}` : "Pull request") : null,
+      last ? el("span", { class: `chip sm ${last.verdict === "PASS" ? "ok" : "warn"}` }, `AI review ${last.verdict === "PASS" ? "passed" : "has findings"} · round ${last.round}`) : null,
+      t.judge ? el("span", { class: `chip sm ${t.judge.score >= 4 ? "ok" : t.judge.score >= 3 ? "warn" : "bad"}`, title: t.judge.summary }, `Judge ${t.judge.score}/5`) : null),
+    t.judge?.summary ? el("div", { class: "result-sum" }, t.judge.summary) : null);
+}
+/** A message of the run (a check, a repair, a lesson, a block) as its own block; a long one folds. */
+function noteBlock(n) {
+  const key = `${n.at}:${n.kind}`;
+  const long = n.text.length > 220 || n.text.includes("\n");
+  const body = el("div", { class: `tl-msg-body${long && !notesOpen.has(key) ? " folded" : ""}` }, ...linked(n.text));
+  const node = el("div", { class: `tl-msg ${n.level || "info"} k-${n.kind}` },
+    el("div", { class: "tl-msg-head" }, el("span", { class: "tl-msg-tag" }, NOTE_LABEL[n.kind] ?? n.kind), el("span", { class: "tl-msg-time" }, clock(n.at)),
+      long ? el("button", { class: "tl-msg-more", type: "button", onclick: () => {
+        const open = !notesOpen.has(key);
+        open ? notesOpen.add(key) : notesOpen.delete(key);
+        body.classList.toggle("folded", !open);
+        node.querySelector(".tl-msg-more").textContent = open ? "Less" : "More";
+      } }, notesOpen.has(key) ? "Less" : "More") : null),
+    body);
+  return node;
 }
 
 function timeline(t, phases) {
@@ -737,12 +947,16 @@ function timeline(t, phases) {
       el("span", { class: "tl-dot" }),
       el("div", { class: "tl-head" }, el("span", { class: "tl-title" }, mark.text), badge ? el("span", { class: `chip sm ${badge[1]}` }, badge[0]) : null,
         el("span", { class: "tl-time", title: new Date(mark.at).toLocaleString() }, `${clock(mark.at)} · ${span(Math.min(next, endAt) - mark.at)}`)));
-    if (mark.started) item.append(el("div", { class: "tl-note" }, mark.started));
     if (state === "current") inPhase(item.querySelector(".tl-dot"), 2000);
     if (state === "failed" || state === "repairing") inPhase(item.querySelector(".tl-dot"), 1600);
-    const its = byMark.get(i) || [];
-    if (its.length) item.append(el("div", { class: "tl-steps" }, ...its.map((s) => stepRow(t, s))));
-    for (const n of notes.filter((n) => n.at >= mark.at && n.at < next)) item.append(el("div", { class: `tl-note ${n.level}` }, n.text));
+    // Every agent call and every message is its own block, in the order they happened.
+    const blocks = [
+      ...(mark.started ? [{ at: mark.at - 1, node: noteBlock({ kind: "run", level: "info", at: mark.at, text: mark.started }) }] : []),
+      ...(byMark.get(i) || []).map((s) => ({ at: s.started, node: stepRow(t, s) })),
+      ...notes.filter((n) => n.at >= mark.at && n.at < next).map((n) => ({ at: n.at, node: n.kind === "run" && /^Done:/.test(n.text) ? resultCard(t, n) : noteBlock(n) })),
+      ...hookRows(t, events).filter((h) => h.at >= mark.at && h.at < next),
+    ].sort((a, b) => a.at - b.at);
+    if (blocks.length) item.append(el("div", { class: "tl-steps" }, ...blocks.map((b) => b.node)));
     detailSeen.add(key);
     list.append(item);
   });
@@ -873,24 +1087,164 @@ async function drawDetail(force, pushed) {
   if (target && (force || liveFor !== `${t.id}:${target.conversationId}`)) watch(t.id, target);
   else if (liveFor && lastLive) $("live").replaceChildren(...lastLive);
 }
+/** The kind of a tool, for its block's shade: shell, reading, writing, or anything else. */
+const toolKind = (name) => (name === "bash" ? "bash" : /^(read|grep|find|ls|glob|search)$/.test(name) ? "read" : /^(write|edit|multi_edit|apply_patch)$/.test(name) ? "write" : "tool");
+const argsOf = (args) => { if (typeof args !== "string") return args || {}; try { return JSON.parse(args); } catch { return {}; } };
+/** One line that says what a tool call does: the command, the path, the size of what it writes. */
+function toolSummary(name, args) {
+  const a = argsOf(args);
+  if (name === "bash") return String(a.command ?? (typeof args === "string" ? args : "")).replace(/\s+/g, " ");
+  const path = String(a.path ?? a.file_path ?? a.pattern ?? "");
+  if (name === "write" && typeof a.content === "string") return `${path} · ${a.content.split("\n").length} lines`;
+  if (name === "edit" && Array.isArray(a.edits)) return `${path} · ${a.edits.length} edit${a.edits.length === 1 ? "" : "s"}`;
+  return path || (typeof args === "string" ? args : JSON.stringify(a)).slice(0, 200);
+}
+const RISKY = /\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\b|\bsudo\b|\b(?:curl|wget)\b[^|\n]*\|\s*(?:ba|z)?sh\b|\bgit\s+push\b[^\n]*(?:-f\b|--force)|\bgit\s+reset\s+--hard\b|\bchmod\s+-R\s+777\b|\bdd\s+if=|\bmkfs\b|:\(\)\s*\{/;
+const SECRETISH = /\b(?:ghp|gho|ghs)_[A-Za-z0-9]{30,}|\bsk-ant-[\w-]{20,}|\bsk-(?:proj-)?[\w-]{32,}|\bpk_\d{4,}_[A-Z0-9]{20,}|\bsntr[ysu]_[\w+/=-]{20,}|\bAKIA[0-9A-Z]{16}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bxox[abposr]-[\w-]{10,}/;
+const extOf = (path) => (String(path || "").split(".").pop() || "").toLowerCase();
+/** A few code lines as a small table: the same look as the diff drawer. */
+function miniCode(rows) {
+  return el("div", { class: "lb-code" }, el("table", { class: "code" }, el("tbody", {}, ...rows.map(([kind, n, text, ext, mark]) =>
+    el("tr", { class: kind }, el("td", { class: "ln" }, n ?? ""), el("td", { class: "sg" }, kind === "add" ? "+" : kind === "del" ? "−" : ""), el("td", { class: "tx" }, ...codeCells(text, ext, mark)))))));
+}
+/** What a tool call is about to do, shown before its output: an edit as a diff, a write's first lines, a command. */
+function toolPreview(name, args) {
+  const a = argsOf(args);
+  const ext = extOf(a.path || a.file_path);
+  if (name === "edit" && Array.isArray(a.edits)) {
+    const rows = [];
+    for (const e of a.edits.slice(0, 6)) {
+      const dels = String(e?.oldText ?? "").split("\n").map((t) => ({ kind: "del", text: t }));
+      const adds = String(e?.newText ?? "").split("\n").map((t) => ({ kind: "add", text: t }));
+      const marks = emphasis([...dels, ...adds]);
+      for (const l of [...dels, ...adds].slice(0, 40)) rows.push([l.kind, null, l.text, ext, marks.get(l)]);
+    }
+    return rows.length ? miniCode(rows) : null;
+  }
+  if (name === "write" && typeof a.content === "string") {
+    const lines = a.content.split("\n");
+    const rows = lines.slice(0, 24).map((t, i) => ["add", i + 1, t, ext]);
+    if (lines.length > 24) rows.push(["note", null, `… ${lines.length - 24} more lines`, ext]);
+    return miniCode(rows);
+  }
+  if (name === "bash" && typeof a.command === "string" && (a.command.length > 90 || a.command.includes("\n"))) {
+    return miniCode(a.command.split("\n").slice(0, 20).map((t) => ["ctx", null, t, "sh"]));
+  }
+  return null;
+}
+/** grep output ("path:line:text") grouped by file. */
+function grepView(text) {
+  const groups = new Map();
+  const rest = [];
+  for (const line of text.split("\n")) {
+    const m = /^([^:\n]+):(\d+):(.*)$/.exec(line);
+    if (!m) { if (line.trim()) rest.push(line); continue; }
+    if (!groups.has(m[1])) groups.set(m[1], []);
+    groups.get(m[1]).push([m[2], m[3]]);
+  }
+  if (!groups.size) return null;
+  const out = [];
+  for (const [path, hits] of groups) {
+    out.push(el("div", { class: "lb-grep-file" }, `${path} (${hits.length})`));
+    for (const [n, t] of hits.slice(0, 30)) out.push(el("div", { class: "lb-grep-line" }, el("span", { class: "n" }, n), el("span", {}, ...highlight(t, extOf(path)))));
+  }
+  for (const r of rest.slice(0, 10)) out.push(el("div", { class: "muted" }, r));
+  return out;
+}
+function liveBlock(kind, tag, meta, state) {
+  const body = el("div", { class: "lb-body" }), out = el("div", { class: "lb-out" });
+  const head = el("div", { class: "lb-head" }, el("span", { class: "lb-tag" }, tag), meta ? el("span", { class: "lb-meta", title: meta }, meta) : null, state ? el("span", { class: "lb-state" }, state) : null);
+  const node = el("div", { class: `lb lb-${kind}${state === "running" ? " running" : ""}` }, head, body, out);
+  return { node, body, out, head };
+}
 function watch(ticketId, step) {
   source?.close();
   liveFor = `${ticketId}:${step.conversationId}`;
   $("live")?.replaceChildren();
   lastLive = [];
-  let text = null;
-  const add = (node) => { lastLive.push(node); const b = $("live"); if (b) { b.append(node); b.scrollTop = b.scrollHeight; } };
+  let text = null, tool = null;
+  const follow = () => { const b = $("live"); if (b && b.scrollHeight - b.scrollTop - b.clientHeight < 140) b.scrollTop = b.scrollHeight; };
+  const add = (block) => { lastLive.push(block.node); const b = $("live"); if (b) { b.append(block.node); b.scrollTop = b.scrollHeight; } return block; };
+  const userBlock = (t) => {
+    if (t.startsWith("Steer from the person watching")) { const blk = liveBlock("steer", "Your steer", null); blk.body.textContent = t.replace(/^Steer from[^\n]*\n+/, ""); return blk; }
+    const blk = liveBlock("prompt", "Prompt", `${t.length} chars`);
+    blk.body.append(el("details", {}, el("summary", {}, t.split("\n").find((l) => l.trim()) ?? "the step's instructions"), el("div", {}, t)));
+    return blk;
+  };
+  const agentBlock = (t) => { const blk = liveBlock("agent", "Agent", null); blk.body.textContent = t; return blk; };
+  const toolBlock = (name, args, state) => {
+    const blk = liveBlock(toolKind(name), name, toolSummary(name, args), state);
+    blk.name = name;
+    blk.started = Date.now();
+    const a = argsOf(args);
+    if (name === "bash" && RISKY.test(String(a.command ?? ""))) blk.head.insertBefore(el("span", { class: "lb-flag risky", title: "A command that deletes, overwrites or runs code from the network" }, "risky"), blk.head.querySelector(".lb-state"));
+    const preview = toolPreview(name, args);
+    if (preview) blk.body.append(preview);
+    return blk;
+  };
+  const end = (blk, ok) => {
+    if (!blk) return;
+    blk.node.classList.remove("running");
+    const took = blk.started ? ` ${span(Date.now() - blk.started)}` : "";
+    blk.head.querySelector(".lb-state")?.replaceChildren(ok ? `✓${took}` : "stopped");
+  };
+  // A write or edit call gets its box when the model starts it, and its preview fills in as it types.
+  const typingCalls = new Map(); // call index -> block
+  const retype = (blk, call) => {
+    blk.args = call.args;
+    blk.head.querySelector(".lb-meta")?.replaceChildren(toolSummary(call.name, call.args));
+    if (blk.frame) return;
+    blk.frame = setTimeout(() => { blk.frame = 0; blk.body.replaceChildren(...[toolPreview(call.name, blk.args)].filter(Boolean)); follow(); }, 120);
+  };
+  const tracker = callTracker();
   source = new EventSource(`/api/tickets/${encodeURIComponent(ticketId)}/events?conversation=${step.conversationId}`);
   source.onmessage = (m) => {
     const e = JSON.parse(m.data);
-    if (e.type === "step") add(el("div", { class: "muted" }, `${e.step} on ${e.model} (${e.status})`));
-    else if (e.type === "snapshot") for (const x of e.entries) add(el("div", { class: x.kind }, x.kind === "tool" ? `→ ${x.name} ${x.args}` : x.kind === "user" ? `> ${x.text.slice(0, 600)}${x.text.length > 600 ? "…" : ""}` : x.text));
-    else if (e.type === "delta") { if (!text) { text = el("div", {}, ""); add(text); } text.textContent += e.text; }
-    else if (e.type === "text") { if (text) text.textContent = e.text; else add(el("div", {}, e.text)); text = null; }
-    else if (e.type === "tool") { text = null; add(el("div", { class: "tool" }, `→ ${e.name} ${e.args}`)); }
-    else if (e.type === "output") add(el("div", { class: "out" }, e.text.slice(-1200)));
-    else if (e.type === "retry") add(el("div", { class: "error" }, `model error, retry ${e.attempt}: ${e.error}`));
-    else if (e.type === "run_end") { text = null; add(el("div", { class: "muted" }, "— answered")); }
+    if (tracker.apply(e)) {
+      for (const [index, call] of tracker.calls) {
+        if (call.name !== "write" && call.name !== "edit") continue;
+        let blk = typingCalls.get(index);
+        if (!blk) { text = null; blk = add(toolBlock(call.name, call.args, "writing…")); blk.node.classList.add("writing", "running"); typingCalls.set(index, blk); }
+        retype(blk, call);
+      }
+      if (e.type === "delta" && !e.text) return;
+    }
+    if (e.type === "step") { const blk = add(liveBlock("note", `${e.step} on ${e.model}`, null, e.status)); blk.node.classList.add("lb-note"); }
+    else if (e.type === "snapshot") {
+      for (const x of e.entries) {
+        if (x.kind === "user") add(userBlock(x.text));
+        else if (x.kind === "text") add(agentBlock(x.text));
+        else if (x.kind === "tool") end(add(toolBlock(x.name, x.args, "…")), true);
+      }
+    }
+    else if (e.type === "delta") { if (!e.text) return; if (!text) text = add(agentBlock("")); text.body.textContent += e.text; follow(); }
+    else if (e.type === "text") { if (text) text.body.textContent = e.text; else if (e.text) add(agentBlock(e.text)); text = null; }
+    else if (e.type === "tool") {
+      text = null;
+      // The box made while the model typed this call becomes the running tool's box.
+      const typed = [...typingCalls.entries()].find(([, b]) => b.name === e.name);
+      if (typed) {
+        const [index, blk] = typed;
+        typingCalls.delete(index);
+        tracker.calls.delete(index);
+        blk.node.classList.remove("writing");
+        blk.head.querySelector(".lb-state")?.replaceChildren("running");
+        blk.started = Date.now();
+        tool = blk;
+      } else tool = add(toolBlock(e.name, e.args, "running"));
+    }
+    else if (e.type === "output") {
+      const into = tool ?? add(liveBlock("tool", "output", null));
+      into.raw = e.replace ? e.text.slice(-3000) : ((into.raw ?? "") + e.text).slice(-3000);
+      const grouped = into.name === "grep" ? grepView(into.raw) : null;
+      if (grouped) into.out.replaceChildren(...grouped); else into.out.textContent = into.raw;
+      if (SECRETISH.test(into.raw) && !into.flagged) { into.flagged = true; into.head.insertBefore(el("span", { class: "lb-flag secret", title: "The output looks like it holds a secret" }, "secret?"), into.head.querySelector(".lb-state")); }
+      into.out.scrollTop = into.out.scrollHeight;
+      follow();
+    }
+    else if (e.type === "tool_end") { end(tool, true); tool = null; }
+    else if (e.type === "retry") { const blk = add(liveBlock("error", `Model error, retry ${e.attempt}`, null)); blk.body.textContent = e.error; }
+    else if (e.type === "run_end") { text = null; end(tool, false); tool = null; typingCalls.clear(); tracker.calls.clear(); const blk = add(liveBlock("note", "answered", null)); blk.node.classList.add("lb-note"); }
   };
 }
 
@@ -1260,6 +1614,239 @@ function holdToApprove(button, ticket, note, after) {
   return button;
 }
 holdToApprove($("doc-approve"), () => reader.ticket, () => $("approve-note")?.value || "", () => $("doc").close());
+
+// ---- tool calls as the model writes them (the step stream's call_start and call_delta) ----
+/** Keeps each tool call of the model's current message, its arguments filled in delta by delta. */
+function callTracker() {
+  const calls = new Map();
+  return {
+    calls,
+    /** Apply a step-stream event; true when a call changed. */
+    apply(e) {
+      if (e.type === "snapshot") { for (const c of e.calls || []) calls.set(c.index, { name: c.name, args: structuredClone(c.args || {}) }); return (e.calls || []).length > 0; }
+      if (e.type !== "delta" || !e.calls?.length) return false;
+      for (const c of e.calls) {
+        if (c.type === "call_start") calls.set(c.index, { name: c.name, args: structuredClone(c.args || {}) });
+        else { const call = calls.get(c.index); if (call) appendAt(call.args, c.path, c.delta); }
+      }
+      return true;
+    },
+    /** The newest write or edit call still being written. */
+    writing() { return [...calls.values()].reverse().find((c) => c.name === "write" || c.name === "edit") ?? null; },
+  };
+}
+/** A path relative to the ticket's worktree, for display. */
+const shownPath = (path) => String(path || "").replace(/^.*?\/worktrees\/[^/]+\//, "");
+
+// ---- diff drawer: what one agent step changed ----
+/** The report a finished step wrote, opened when you click it. */
+const REPORT_OF = { review: (s) => `review-${s.round}.md`, judge: () => "judge.txt" };
+const CODE_ROLES = new Set(["test", "code", "fix", "docs", "coordinate"]);
+let diffing = null; // { ticketId, step, sig, closed: Set, timer }
+const short = (sha) => (sha ? sha.slice(0, 8) : "");
+const KEYWORDS = new Set("abstract as async await break case catch class const continue def default defer delete do elif else enum except export extends false finally fn for from func function go if impl implements import in interface is lambda let match mod new nil none None not null of or package pass private protected pub public raise readonly return self static struct super switch this throw true True False try type typeof undefined use var void while with yield".split(" "));
+/** A light highlighter, the same for every language: keywords, strings, comments, numbers. Text nodes only. */
+function highlight(text, ext) {
+  const hash = /^(py|sh|bash|zsh|rb|yml|yaml|toml|r|pl|mk|dockerfile|env|conf|ini)$/i.test(ext);
+  const re = hash ? /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d[\d_.]*\b)|([A-Za-z_$][\w$]*)/g
+    : /(\/\/.*$|\/\*.*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d[\d_.]*\b)|([A-Za-z_$][\w$]*)/g;
+  const out = [];
+  let at = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > at) out.push(text.slice(at, m.index));
+    if (m[1]) out.push(el("span", { class: "tok-c" }, m[1]));
+    else if (m[2]) out.push(el("span", { class: "tok-s" }, m[2]));
+    else if (m[3]) out.push(el("span", { class: "tok-n" }, m[3]));
+    else out.push(KEYWORDS.has(m[4]) ? el("span", { class: "tok-k" }, m[4]) : m[4]);
+    at = re.lastIndex;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return out;
+}
+/**
+ * The words that changed: a run of removed lines followed by added lines is paired line by line, and
+ * each pair's common start and end are trimmed off (at word edges), leaving the changed middle.
+ */
+function emphasis(lines) {
+  const marks = new Map();
+  for (let i = 0; i < lines.length; ) {
+    if (lines[i].kind !== "del") { i++; continue; }
+    let d = i;
+    while (d < lines.length && lines[d].kind === "del") d++;
+    let a = d;
+    while (a < lines.length && lines[a].kind === "add") a++;
+    const dels = lines.slice(i, d), adds = lines.slice(d, a);
+    if (adds.length && Math.abs(dels.length - adds.length) <= 2) {
+      for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
+        const x = dels[k].text, y = adds[k].text;
+        let p = 0;
+        while (p < x.length && p < y.length && x[p] === y[p]) p++;
+        while (p > 0 && /\w/.test(x[p - 1]) && /\w/.test(x[p] ?? "")) p--; // back to a word edge
+        let q = 0;
+        while (q < x.length - p && q < y.length - p && x[x.length - 1 - q] === y[y.length - 1 - q]) q++;
+        while (q > 0 && /\w/.test(x[x.length - q] ?? "") && /\w/.test(x[x.length - q - 1] ?? "")) q--;
+        // Only a real part of the line: a line changed all through gets no emphasis.
+        if (p + q > 0 && x.length - p - q < x.length * 0.9) {
+          marks.set(dels[k], [p, x.length - q]);
+          marks.set(adds[k], [p, y.length - q]);
+        }
+      }
+    }
+    i = a;
+  }
+  return marks;
+}
+function codeCells(text, ext, mark) {
+  if (!mark) return highlight(text, ext);
+  const [from, to] = mark;
+  return [...highlight(text.slice(0, from), ext), el("span", { class: "wd" }, ...highlight(text.slice(from, to), ext)), ...highlight(text.slice(to), ext)];
+}
+function fileRows(f) {
+  const ext = (f.path.split(".").pop() || "").toLowerCase();
+  const rows = [];
+  for (const h of f.hunks) {
+    rows.push(el("tr", { class: "hunk" }, el("td", { colspan: 4 }, h.header)));
+    const marks = emphasis(h.lines);
+    for (const l of h.lines) {
+      rows.push(el("tr", { class: l.kind },
+        el("td", { class: "ln" }, l.old ?? ""), el("td", { class: "ln" }, l.new ?? ""),
+        el("td", { class: "sg" }, l.kind === "add" ? "+" : l.kind === "del" ? "−" : ""),
+        el("td", { class: "tx" }, ...(l.kind === "note" ? [l.text] : codeCells(l.text, ext, marks.get(l))))));
+    }
+  }
+  return rows;
+}
+function drawDiff(d) {
+  const sub = $("diff-sub");
+  // replaceChildren prints a null as "null": only real nodes go in.
+  sub.replaceChildren(...[
+    el("span", { class: `chip sm ${d.status === "done" ? "ok" : d.status === "failed" ? "bad" : "run"}` }, d.status),
+    el("span", {}, d.model.split("/").pop()),
+    el("code", {}, `${short(d.from) || "start"} → ${d.to ? short(d.to) : "working tree"}`),
+    d.live ? el("span", { style: "display:inline-flex;align-items:center;gap:5px" }, inPhase(el("span", { class: "live-dot" }), 2000), "live") : null,
+    el("span", {}, el("span", { class: "a" }, `+${d.additions}`), " ", el("span", { class: "d" }, `−${d.deletions}`), ` · ${d.files.length}${d.more ? `+${d.more}` : ""} file${d.files.length === 1 ? "" : "s"}`)].filter(Boolean));
+  for (const x of sub.querySelectorAll(".a")) x.style.color = "var(--success)";
+  for (const x of sub.querySelectorAll(".d")) x.style.color = "var(--destructive)";
+  $("diff-commits").replaceChildren(...[...d.commits.slice(0, 8).map((c) => el("div", {}, el("span", { class: "sha" }, c.sha), c.subject)),
+    d.commits.length > 8 ? el("div", { class: "muted" }, `… ${d.commits.length - 8} more commits`) : null].filter(Boolean));
+  const view = $("diff-view"), body = $("diff-body");
+  const scroll = view.scrollTop;
+  if (!d.files.length) {
+    $("diff-files").replaceChildren();
+    body.replaceChildren(el("div", { class: "dfile-more" }, d.live ? "No changes yet. They appear here as the agent makes them." : "This step changed no files."));
+    return;
+  }
+  const status = (f) => ({ added: "A", deleted: "D", renamed: "R" }[f.status] || "M");
+  $("diff-files").replaceChildren(...d.files.map((f, i) => {
+    const slash = f.path.lastIndexOf("/");
+    return el("button", { class: "file", title: f.from ? `${f.from} → ${f.path}` : f.path, onclick: () => {
+      diffing.closed.delete(f.path);
+      const box = document.getElementById(`dfile-${i}`);
+      box?.classList.remove("closed");
+      if (box && !box.dataset.drawn) { box.querySelector("tbody").replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
+      box?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    } },
+      el("span", { class: `fs ${status(f)}` }, status(f)),
+      el("span", { class: "fpath" }, slash >= 0 ? el("span", { class: "dir" }, f.path.slice(0, slash + 1)) : null, f.path.slice(slash + 1)),
+      el("span", { class: "fstat" }, el("span", { class: "a" }, `+${f.additions}`), " ", el("span", { class: "d" }, `−${f.deletions}`)));
+  }));
+  body.replaceChildren(...d.files.map((f, i) => {
+    // Big files and files past the first 30 start closed, and are drawn only when opened.
+    const big = f.additions + f.deletions > 600 || i >= 30;
+    const closed = diffing.closed.has(f.path) || (big && !diffing.opened.has(f.path));
+    const tbody = el("tbody");
+    const box = el("section", { class: `dfile${closed ? " closed" : ""}`, id: `dfile-${i}` },
+      el("div", { class: "dfile-head", onclick: () => {
+        const nowClosed = box.classList.toggle("closed");
+        if (nowClosed) { diffing.closed.add(f.path); diffing.opened.delete(f.path); } else { diffing.closed.delete(f.path); diffing.opened.add(f.path); }
+        if (!nowClosed && !box.dataset.drawn) { tbody.replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
+      } },
+        el("span", { class: "twist" }, "›"), el("span", { class: `fs ${status(f)}` }, status(f)),
+        el("span", { class: "fpath" }, f.from ? `${f.from} → ${f.path}` : f.path),
+        el("span", { class: "fstat" }, el("span", { class: "a" }, `+${f.additions}`), " ", el("span", { class: "d" }, `−${f.deletions}`))),
+      el("div", { class: "dfile-body" },
+        f.binary ? el("div", { class: "dfile-more" }, "A binary file: not shown.") : el("table", { class: "code" }, tbody),
+        f.cut ? el("div", { class: "dfile-more" }, `${f.cut} more lines not shown.`) : null));
+    if (!closed && !f.binary) { tbody.replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
+    return box;
+  }));
+  view.scrollTop = scroll;
+}
+async function loadDiff() {
+  if (!diffing || !$("diff").open) return;
+  const at = diffing;
+  let data;
+  try {
+    data = await api(`/api/tickets/${encodeURIComponent(at.ticketId)}/steps/${encodeURIComponent(at.step)}/diff`);
+  } catch (e) {
+    $("diff-files").replaceChildren();
+    $("diff-body").replaceChildren(el("div", { class: "dfile-more error" }, e.message));
+    return;
+  }
+  if (diffing !== at) return;
+  const sig = JSON.stringify(data);
+  if (sig !== at.sig) { at.sig = sig; drawDiff(data); }
+  clearTimeout(at.timer);
+  if (data.live) at.timer = setTimeout(loadDiff, 3000); // live while the step runs
+}
+/** The code the agent is typing now, in the drawer: a write as its lines, an edit as a diff. */
+function drawPending() {
+  const box = $("diff-pending");
+  const call = diffing?.tracker?.writing();
+  if (!call) { box.replaceChildren(); return; }
+  const a = call.args || {};
+  const path = shownPath(a.path || a.file_path || "");
+  const ext = extOf(path);
+  const rows = [];
+  if (call.name === "write") {
+    const lines = String(a.content ?? "").split("\n");
+    const from = Math.max(0, lines.length - 400); // the end, where the typing is
+    if (from > 0) rows.push(el("tr", { class: "hunk" }, el("td", { colspan: 4 }, `… ${from} lines above`)));
+    lines.slice(from).forEach((t, i) => rows.push(el("tr", { class: "add" }, el("td", { class: "ln" }, ""), el("td", { class: "ln" }, from + i + 1), el("td", { class: "sg" }, "+"), el("td", { class: "tx" }, ...highlight(t, ext)))));
+  } else {
+    for (const [k, e] of (Array.isArray(a.edits) ? a.edits : []).entries()) {
+      if (!e) continue;
+      rows.push(el("tr", { class: "hunk" }, el("td", { colspan: 4 }, `edit ${k + 1}`)));
+      const dels = String(e.oldText ?? "").split("\n").map((t) => ({ kind: "del", text: t }));
+      const adds = e.newText === undefined ? [] : String(e.newText).split("\n").map((t) => ({ kind: "add", text: t }));
+      const marks = emphasis([...dels, ...adds]);
+      for (const l of [...dels, ...adds]) rows.push(el("tr", { class: l.kind }, el("td", { class: "ln" }, ""), el("td", { class: "ln" }, ""), el("td", { class: "sg" }, l.kind === "add" ? "+" : "−"), el("td", { class: "tx" }, ...codeCells(l.text, ext, marks.get(l)))));
+    }
+  }
+  box.replaceChildren(el("section", { class: "dfile pending" },
+    el("div", { class: "dfile-head" }, inPhase(el("span", { class: "live-dot" }), 2000), el("span", {}, call.name === "write" ? "Writing now" : "Editing now"), el("span", { class: "fpath" }, path || "…")),
+    el("div", { class: "dfile-body" }, el("table", { class: "code" }, el("tbody", {}, ...rows)))));
+}
+let pendingFrame = 0;
+const schedulePending = () => { if (!pendingFrame) pendingFrame = setTimeout(() => { pendingFrame = 0; drawPending(); }, 100); };
+/** Open the drawer on what `step` changed: live while it runs, with the code it is typing streamed. */
+function openDiff(t, step) {
+  if (diffing) { clearTimeout(diffing.timer); diffing.source?.close(); }
+  diffing = { ticketId: t.id, step: step.name, sig: "", closed: new Set(), opened: new Set(), timer: 0, source: null, tracker: callTracker() };
+  $("diff-title").textContent = `${t.cid} · ${step.name}`;
+  $("diff-sub").replaceChildren(el("span", {}, "Loading the diff…"));
+  $("diff-commits").replaceChildren();
+  $("diff-files").replaceChildren();
+  $("diff-pending").replaceChildren();
+  $("diff-body").replaceChildren();
+  if (!$("diff").open) $("diff").showModal();
+  if (step.status === "running") {
+    const at = diffing;
+    const source = new EventSource(`/api/tickets/${encodeURIComponent(t.id)}/events?conversation=${step.conversationId}`);
+    at.source = source;
+    source.onmessage = (m) => {
+      if (diffing !== at) return source.close();
+      const e = JSON.parse(m.data);
+      if (at.tracker.apply(e)) schedulePending();
+      // The call ran: the file is on disk, so the diff below has it now.
+      if (e.type === "tool_end" || e.type === "run_end") { at.tracker.calls.clear(); schedulePending(); clearTimeout(at.timer); loadDiff(); }
+    };
+  }
+  loadDiff();
+}
+$("diff-close").addEventListener("click", () => $("diff").close());
+$("diff").addEventListener("click", (e) => { if (e.target === $("diff")) $("diff").close(); });
+$("diff").addEventListener("close", () => { if (diffing) { clearTimeout(diffing.timer); diffing.source?.close(); } diffing = null; });
 
 // ---- model spend and limits ----
 function drawUsage(u) {

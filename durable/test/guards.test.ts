@@ -5,7 +5,9 @@ import { execFileSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { useOriginUrl } from "../src/git.ts";
 import { verifyProblem } from "../src/lessons.ts";
+import { notInPlan, unneededFiles } from "../src/scope.ts";
 import { writeGuardHooks } from "../src/git.ts";
 import { HOOK_BYPASS, SECRET_PATHS } from "../src/roles.ts";
 import { knownSecrets, redact, scanBranch, scanText } from "../src/secrets.ts";
@@ -88,11 +90,54 @@ describe("guardrails", () => {
 			await writeFile(join(w.repo, "README.md"), "changed\n");
 			assert.ok(git("stash", "push", "--message", "lint-staged automatic backup").ok, "lint-staged's backup is allowed");
 			assert.ok(git("stash", "pop").ok, "and taking it back");
+			// What lint-staged really runs: the message goes only into the reflog, the subject stays "WIP on ..."
+			const backup = git("stash", "create").out.trim();
+			assert.ok(backup, "stash create made a commit");
+			const stored = git("-c", "submodule.recurse=false", "stash", "store", "--quiet", "--message", "lint-staged automatic backup", backup);
+			assert.ok(stored.ok, `lint-staged's stash store is allowed: ${stored.out}`);
+			assert.ok(git("stash", "drop", "--quiet", "stash@{0}").ok, "and its drop");
+			assert.equal(git("stash", "store", "--message", "mine", backup).ok, false, "a store with any other message is refused");
 			const mine = git("stash", "push", "--message", "my own stash");
 			assert.equal(mine.ok, false, "any other stash is refused");
 			assert.match(mine.out, /refused to change refs\/stash/);
 		} finally {
 			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("finds what a push does not need: build output, caches, logs, a lockfile without a manifest, run-folder files", async () => {
+		const w = await scratchRepo();
+		try {
+			await mkdir(join(w.repo, ".vscode"), { recursive: true });
+			await writeFile(join(w.repo, ".vscode", "settings.json"), "{}\n");
+			w.git(w.repo, "add", "."); w.git(w.repo, "commit", "-qm", "the repo's own editor settings"); w.git(w.repo, "push", "-q", "origin", "main");
+			w.git(w.repo, "checkout", "-q", "-b", "work");
+			for (const [path, text] of [["src/a.ts", "x"], ["dist/a.js", "x"], [".turbo/cache.json", "{}"], ["app.tsbuildinfo", "{}"], ["debug.log", "x"], ["pnpm-lock.yaml", "x"], ["notes/spec.md", "x"], [".vscode/settings.json", '{"a":1}'], ["kept/out.log", "x"]] as const) {
+				await mkdir(join(w.repo, path, ".."), { recursive: true });
+				await writeFile(join(w.repo, path), text);
+			}
+			w.git(w.repo, "add", "-f", "."); w.git(w.repo, "commit", "-qm", "work");
+			const found = await unneededFiles(w.repo, "origin/main", new Set(["kept/out.log"]));
+			assert.deepEqual(found.map((f) => f.path).sort(), [".turbo/cache.json", "app.tsbuildinfo", "debug.log", "dist/a.js", "notes/spec.md", "pnpm-lock.yaml"]);
+			assert.ok(!found.some((f) => f.path === "src/a.ts"), "the ticket's code passes");
+			assert.ok(!found.some((f) => f.path === ".vscode/settings.json"), "a file the base already tracks is the repo's choice");
+			await mkdir(join(w.root, "run"), { recursive: true });
+			await writeFile(join(w.root, "run", "plan.md"), "Change src/a.ts and pnpm-lock.yaml.");
+			assert.ok((await notInPlan(w.repo, "origin/main", join(w.root, "run"))).includes("debug.log"));
+		} finally {
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("points the factory's git at ORIGIN_URL without touching the checkout's remote", () => {
+		const before = process.env.GIT_CONFIG_PARAMETERS;
+		try {
+			delete process.env.GIT_CONFIG_PARAMETERS;
+			useOriginUrl("git@github.com-altir:acme/app.git");
+			useOriginUrl("git@github.com-altir:acme/app.git");
+			assert.equal(process.env.GIT_CONFIG_PARAMETERS, "'remote.origin.url=git@github.com-altir:acme/app.git'", "set once");
+		} finally {
+			if (before === undefined) delete process.env.GIT_CONFIG_PARAMETERS; else process.env.GIT_CONFIG_PARAMETERS = before;
 		}
 	});
 

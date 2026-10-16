@@ -19,6 +19,8 @@ export type Config = {
 	readonly runsDir: string;
 	readonly treesDir: string;
 	readonly repo: string;
+	/** The URL the factory's git commands use for origin (empty: the checkout's own). */
+	readonly originUrl: string;
 	readonly base: string;
 	readonly setupCmd: string;
 	readonly verifyCmd: string;
@@ -74,6 +76,8 @@ export type Config = {
 		readonly allowedHosts: readonly string[];
 	};
 	readonly autoPickup: boolean;
+	/** PRE_PUSH=0: push without the repo's pre-push hook (it does not run anywhere). */
+	readonly prePush: boolean;
 	readonly pollSeconds: number;
 	/** Model API use: per provider (one API key each), requests and tokens per minute; spend per day. 0 = no limit. */
 	readonly limits: {
@@ -116,6 +120,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		runsDir: join(dataDir, "runs"),
 		treesDir: join(dataDir, "worktrees"),
 		repo: resolve(env.REPO || process.cwd()),
+		originUrl: (env.ORIGIN_URL ?? "").trim(),
 		base: env.BASE || "develop",
 		setupCmd: env.SETUP_CMD ?? "",
 		verifyCmd: env.VERIFY_CMD ?? "",
@@ -173,6 +178,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 			allowedHosts: list(env.DASH_ALLOWED_HOSTS, ","),
 		},
 		autoPickup: flag(env.AUTO_PICKUP, false),
+		prePush: flag(env.PRE_PUSH, true),
 		pollSeconds: Math.max(60, num(env.POLL_INTERVAL, 3600, "POLL_INTERVAL")),
 		limits: {
 			rpm: num(env.RATE_LIMIT_RPM, 50, "RATE_LIMIT_RPM"),

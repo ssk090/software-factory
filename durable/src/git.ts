@@ -123,8 +123,20 @@ export async function removeWorktree(repo: string, worktree: string): Promise<vo
 	});
 }
 
-export async function push(worktree: string, branch: string): Promise<void> {
-	await repoLocked(() => gitOk(worktree, "push", "-q", "-u", "origin", `HEAD:refs/heads/${branch}`));
+/** Push the ticket's branch. `verify: false` when the repo's pre-push hook already ran (in the sandbox). */
+export async function push(worktree: string, branch: string, options: { verify?: boolean } = {}): Promise<void> {
+	await repoLocked(() => gitOk(worktree, "push", "-q", "-u", ...(options.verify === false ? ["--no-verify"] : []), "origin", `HEAD:refs/heads/${branch}`));
+}
+
+/**
+ * ORIGIN_URL: the factory's own git commands (fetch, push, ls-remote) use this URL for origin, say an
+ * SSH host alias with the right key, without changing the checkout's own remote.
+ */
+export function useOriginUrl(url: string): void {
+	if (!url) return;
+	const param = `'remote.origin.url=${url.replace(/'/g, "")}'`;
+	const current = process.env.GIT_CONFIG_PARAMETERS ?? "";
+	if (!current.includes(param)) process.env.GIT_CONFIG_PARAMETERS = `${current} ${param}`.trim();
 }
 
 export const head = (worktree: string) => gitOk(worktree, "rev-parse", "HEAD");
@@ -167,6 +179,7 @@ exec "$dir/$name" "$@"
 BR=${sq(branch)}
 COMMON=${sq(common)}
 LOG=${sq(join(runDir, "guard.log"))}
+STASHES=${sq(join(runDir, "lint-staged-stashes"))}
 in=$(cat)
 # another repository (an agent cloned something): not ours to guard
 here=$(cd "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)
@@ -178,12 +191,20 @@ if [ "$1" = prepared ] && [ "$here" = "$COMMON" ]; then
       "refs/heads/$BR"|refs/remotes/*|refs/rewritten/*|refs/worktree/*|refs/bisect/*) ;;
       refs/stash)
         # lint-staged (a pre-commit hook) keeps a backup in the stash and drops it again: allow that
-        # entry, and only that one. Any other stash stays off limits.
+        # entry, and only that one. Any other stash stays off limits. lint-staged runs "git stash create"
+        # and then "git stash store --message 'lint-staged automatic backup'": the commit's subject stays
+        # "WIP on <branch>" and the message reaches the reflog only after this hook. So the store is known
+        # by the git command that runs it (this hook's parent), and is noted in STASHES for its drop
+        # (by then git has already removed its reflog entry).
         ok=
-        for c in "$new" "$old"; do
-          case $c in *[!0]*) ;; *) continue ;; esac
-          case $(git log -1 --format=%s "$c" 2>/dev/null) in *"lint-staged automatic backup"*) ok=1 ;; esac
-        done
+        if [ -r "/proc/$PPID/cmdline" ]; then cmd=$(tr '\\0' ' ' <"/proc/$PPID/cmdline"); else cmd=$(ps -o args= -p "$PPID" 2>/dev/null); fi
+        backup() { case $(git log -1 --format=%s "$1" 2>/dev/null) in *"lint-staged automatic backup"*) return 0 ;; esac; grep -qx "$1" "$STASHES" 2>/dev/null; }
+        case $new in *[!0]*)
+          case $cmd in *stash*store*"lint-staged automatic backup"*) ok=1; echo "$new" >>"$STASHES" ;; esac
+          case $(git log -1 --format=%s "$new" 2>/dev/null) in *"lint-staged automatic backup"*) ok=1 ;; esac ;;
+        esac
+        # taking the backup off again: drop or pop of that entry
+        case $old in *[!0]*) case $cmd in *stash*drop*|*stash*pop*) backup "$old" && ok=1 ;; esac ;; esac
         [ -n "$ok" ] || bad="$bad $ref" ;;
       refs/*|worktrees/*|main-worktree/*) bad="$bad $ref" ;;
       *) ;;   # HEAD, ORIG_HEAD and other pseudo refs of this worktree

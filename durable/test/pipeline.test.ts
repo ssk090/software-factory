@@ -58,12 +58,16 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			const roles = t.steps.map((s) => s.name);
 			assert.deepEqual(roles, ["spec-1-1", "plan-1-1", "test-1-1", "code-1-1", "docs-1-1", "pr-summary-1-1", "review-1-1", "fix-1-1", "review-2-1", "pr-summary-2-1", "judge-1-1"]);
 			assert.ok(t.steps.every((s) => s.status === "done"));
+			const code = t.steps.find((s) => s.name === "code-1-1")!;
+			assert.ok(code.headBefore && code.headAfter && code.headBefore !== code.headAfter, "a step records the commits it started and ended on");
 			assert.ok(t.steps.filter((s) => s.role === "review").every((s) => s.model === "faux/other-1"), "the reviewer is not the coder's family");
 			assert.deepEqual(t.verify.map((v) => [v.round, v.ok]), [[1, true], [2, true], [4, true]]);
 			// The PR flow and the ticket's statuses.
 			assert.ok(w.gitHost.log.some((l) => l.startsWith("create main feature/T-1/test-ticket-t-1 title 1")), w.gitHost.log.join("\n"));
 			assert.ok(w.gitHost.log.includes("label https://example.test/pr/1 test-label"));
 			assert.ok(w.gitHost.log.includes("ready https://example.test/pr/1"));
+			assert.ok(w.gitHost.log.includes("review https://example.test/pr/1 file.txt:1"), "review 1 went to the PR with its inline comment");
+			assert.ok(t.events.some((e) => e.text === "Review 1: FIX; posted on the PR with 1 inline comment(s)"));
 			assert.ok(w.gitHost.log.includes("edit https://example.test/pr/1 title 2"));
 			assert.equal(w.tracker.status.get("T-1"), "in review");
 			// The branch was pushed with the coder's and the fixer's commits; main did not move.
@@ -530,6 +534,23 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			assert.deepEqual(t.steps.filter((s) => s.role === "code" || s.role === "coordinate").map((s) => s.name), ["code-1-1", "coordinate-1-1"], "the coder's step is kept, not run again");
 			assert.match(await readFile(join(t.run!, "failure-1.md"), "utf8"), /- Kind: blocked[\s\S]*The sandbox container stopped/);
 			assert.match(w.git(t.worktree!, "log", "--format=%s", "-5").toString(), /code \(the coordinator finished it\)/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("pushes only what the ticket needs: build output stops the push, and the coordinator takes it out of the commits", async () => {
+		const w = await world({ coderFile: ["dist/bundle.js", "console.log('built');"], coordinator: "remove-listed" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-27", { gate: false });
+			const t = await settle(factory, "T-27");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.match(await readFile(join(t.run!, "failure-1.md"), "utf8"), /- Kind: scope[\s\S]*- dist\/bundle\.js: build output/);
+			const pushed = w.git(w.repo, "ls-tree", "-r", "--name-only", `origin/${t.branch}`).toString();
+			assert.ok(!pushed.includes("dist/bundle.js"), "the build output never reached the remote");
+			assert.ok(pushed.includes("file.txt"), "the ticket's own change did");
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });

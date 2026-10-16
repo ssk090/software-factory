@@ -23,6 +23,9 @@ export type StepRecord = {
 	sessionId?: string;
 	/** Time the ticket was paused while this step ran: AGENT_TIMEOUT does not count it. */
 	pausedMs?: number;
+	/** The worktree's commit when the step started, and when it ended: its diff in the dashboard. */
+	headBefore?: string;
+	headAfter?: string;
 	/** What the step's model requests used, from the conversation's pi.usage (once it ended). */
 	usage?: StepUsage | null;
 };
@@ -47,7 +50,7 @@ export type Revision = {
 export type TicketEvent = {
 	at: number;
 	level: "info" | "warn" | "error";
-	/** run, phase, step, gate, verify, tracker, git, pr, review, control, budget */
+	/** run, phase, step, gate, verify, hook, tracker, git, pr, review, control, budget */
 	kind: string;
 	text: string;
 	/** The pipeline phase it happened in. */

@@ -6,13 +6,14 @@
 // and every POST carries the token this start wrote to state/dash.token (no cross-site requests: a
 // page elsewhere cannot read it). Listening on another address requires DASH_PASSWORD (basic auth).
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgentEvent, AssistantEntry, type ConversationId, watchEvents } from "@earendil-works/pi-durable";
 import type { Ticket } from "./docs.ts";
 import type { Factory } from "./host.ts";
+import { stepDiff } from "./diff.ts";
 import { PHASES } from "./pipeline.ts";
 import { score } from "./sentry.ts";
 
@@ -113,11 +114,13 @@ function compact(event: AgentEvent): Record<string, unknown> | null {
 			return { type: "text", text };
 		}
 		case "tool_execution_start":
-			return event.parentToolCallId ? null : { type: "tool", name: event.toolName, args: JSON.stringify(event.args).slice(0, 2000) };
+			// Enough of the arguments for the dashboard's previews (an edit's old and new text, a write's start).
+			return event.parentToolCallId ? null : { type: "tool", name: event.toolName, args: JSON.stringify(event.args).slice(0, 16_000) };
 		case "tool_execution_update": {
 			if (event.parentToolCallId || event.output === undefined) return null;
 			const out = "set" in event.output ? event.output.set : (event.output.append ?? "");
-			return out ? { type: "output", text: out.slice(-4000) } : null;
+			// replace: the tool's whole output window (a "set"), not more of it (an "append").
+			return out ? { type: "output", text: out.slice(-4000), replace: "set" in event.output } : null;
 		}
 		case "tool_execution_end":
 			return event.parentToolCallId ? null : { type: "tool_end", name: event.toolName };
@@ -205,6 +208,14 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 				return json(res, 200, detail);
 			}
 			if (method === "GET" && action === "events") return stream(res, url, ticketId);
+			// What one agent step changed: GET /api/tickets/:id/steps/:step/diff
+			if (method === "GET" && action === "steps" && parts[5] === "diff") {
+				const ticket = await factory.ticket(ticketId);
+				const step = ticket?.steps.find((s) => s.name === parts[4]);
+				if (ticket === undefined || step === undefined) throw new HttpFail(404, "unknown ticket or step");
+				if (ticket.worktree === null || !(await stat(ticket.worktree).then(() => true, () => false))) throw new HttpFail(409, "the ticket's worktree is gone (removed, or the PR was merged)");
+				return json(res, 200, { step: step.name, role: step.role, model: step.model, status: step.status, ...(await stepDiff(ticket.worktree, step)) });
+			}
 			if (method === "POST") {
 				const input = await body(req);
 				if (action === "start") {
@@ -261,8 +272,8 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 		const ticket = await factory.ticket(ticketId);
 		if (ticket === undefined) return null;
 		const files: Record<string, string | null> = {};
-		const logs = ["route.log", "guard.log", "skills.log", "setup.log", ...ticket.verify.map((v) => v.log)];
-		for (const name of ["spec.md", "plan.md", "tests.md", "blocked.md", "verify-failed.md", "judge.txt", ...ticket.reviews.map((r) => r.file), ...logs]) files[name] = await runFile(ticket, name);
+		const logs = ["route.log", "guard.log", "skills.log", "setup.log", ...ticket.verify.map((v) => v.log), "pre-push.log"];
+		for (const name of ["spec.md", "plan.md", "tests.md", "blocked.md", "verify-failed.md", "judge.txt", ...new Set([...ticket.reviews.map((r) => r.file), ...(ticket.steps ?? []).filter((s) => s.role === "review").map((s) => `review-${s.round}.md`)]), ...logs]) files[name] = await runFile(ticket, name);
 		// A running step's usage so far (an ended step carries its own).
 		const steps = await Promise.all((ticket.steps ?? []).map(async (s) => (s.usage == null ? { ...s, usage: await factory.stepUsage(s.conversationId) } : s)));
 		return { ticket: { ...ticket, steps, events: ticket.events ?? [], paused: ticket.paused ?? null }, files, phases: PHASES };

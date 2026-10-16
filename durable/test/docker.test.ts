@@ -2,7 +2,7 @@
 // cell's variables. Skipped when Docker is not running.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -85,6 +85,9 @@ describe("docker sandbox", { skip: !docker && "Docker is not running", timeout: 
 describe("pipeline in the docker sandbox", { skip: (!docker || process.env.SF_DOCKER_PIPELINE !== "1") && "set SF_DOCKER_PIPELINE=1 with the software-factory image", timeout: 600_000 }, () => {
 	it("takes a ticket to a reviewed PR with every agent command in the ticket's container", async () => {
 		const w = await scratchRepo(homedir());
+		// The repo's pre-push hook passes only on Linux: it must run in the sandbox, where the dependencies are.
+		await writeFile(join(w.repo, ".git", "hooks", "pre-push"), '#!/bin/sh\n[ "$(uname)" = Linux ] || { echo "pre-push ran outside the sandbox" >&2; exit 1; }\nread line; echo "pre-push in the sandbox for $line"\n');
+		await chmod(join(w.repo, ".git", "hooks", "pre-push"), 0o755);
 		const config = testConfig(w.repo, w.data, { SANDBOX: "docker", SANDBOX_IMAGE: process.env.SANDBOX_TEST_IMAGE || "software-factory", CACHE_VOLUME: "" });
 		const { models } = fauxAgents();
 		const factory = await Factory.open({ config, models, lanes, tracker: new FakeTracker(), gitHost: new FakeGitHost(), sentry: null, log: () => {}, admitPollMs: 50 });
@@ -97,6 +100,11 @@ describe("pipeline in the docker sandbox", { skip: (!docker || process.env.SF_DO
 			const escape = await readFile(join(t.run!, "escape.log"), "utf8");
 			assert.match(escape, /refused to change refs\/heads\/main/, "the guard hook works inside the container");
 			assert.match(await readFile(join(t.run!, "cell.txt"), "utf8"), /^port 20000 token none container$/m, "the coder's commands ran in a container");
+			assert.match(await readFile(join(t.run!, "pre-push.log"), "utf8"), /pre-push in the sandbox for refs\/heads\/feature\/T-D\//, "the repo's pre-push hook ran in the sandbox, with the refs on its stdin");
+			const hook = t.events.filter((e) => e.kind === "hook").map((e) => e.text);
+			// Every push (the PR, then the review fixes) is a start and an end on the timeline.
+			assert.ok(hook.length >= 2 && hook.length % 2 === 0, hook.join("\n"));
+			hook.forEach((text, i) => assert.match(text, i % 2 === 0 ? /^Pre-push hook running in the sandbox/ : /^Pre-push hook passed in \d+s$/));
 			assert.throws(() => execFileSync("docker", ["inspect", "factory-t-d"], { stdio: "ignore" }), "the container went with the run");
 		} finally {
 			await factory.close();
