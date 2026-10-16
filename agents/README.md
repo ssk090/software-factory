@@ -20,9 +20,10 @@ conversation when the factory runs again.
 | PR summary writer | `pr-summary.md` | commits, diff, spec, reviews | `pr-title.txt`, `pr-body.md` |
 | code reviewer | `review.md` | diff, spec, earlier reviews | `review-N.md` (ends with VERDICT: PASS or FIX) |
 | fixer | `fix.md` | latest review | commits, `fix-notes.md` |
+| coordinator | `coordinate.md` | `failure-N.md` (a failed check, a refused push, a secret the scan found), spec, plan, tests | a fix on the branch, `repair-N.md` (ends with LESSON:), or `blocked.md` |
 | judge | `judge.md` | everything, plus the real diff | `judge.json`: criteria met, hallucinations, score, prompt fixes |
 
-Flow: spec -> planner -> (human gate) -> test writer -> coder -> docs -> PR summary -> draft PR -> review <-> fix -> PR summary again -> judge -> ready.
+Flow: spec -> planner -> (human gate) -> test writer -> coder -> docs -> PR summary -> draft PR -> review <-> fix -> PR summary again -> judge -> ready. The coordinator is called in between when a check the factory runs fails (a refused push, the secret scan, VERIFY_CMD after the coder's second try); the phase runs again after its repair.
 
 Each file starts with a header:
 
