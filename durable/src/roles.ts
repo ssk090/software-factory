@@ -8,6 +8,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { StepDoc } from "./docs.ts";
 import { inside } from "./env.ts";
 import { deliverSkills, readAgentFile, stepSkills } from "./skills.ts";
+import { steBlock, stePrompt, steRoles } from "./ste.ts";
 
 /** Agents that only read the repo: they write only into the run folder, and must not commit. */
 export const READERS = new Set(["spec", "plan", "review", "judge"]);
@@ -18,8 +19,9 @@ const GIT_PUSH = /\bgit\b(?:\s+-[cC]\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+push\b/;
 
 /**
  * The guard (a beforeTool hook): file tools stay inside the ticket's worktree and run folder (after
- * resolving symlinks), readers write only into the run folder, and no agent pushes. Git refs are
- * guarded separately by the ticket's reference-transaction hook (git.ts).
+ * resolving symlinks), readers write only into the run folder, and no agent pushes. A role in
+ * STE_ROLES cannot write prose that breaks a hard Simplified Technical English rule (ste.ts). Git refs
+ * are guarded separately by the ticket's reference-transaction hook (git.ts).
  */
 export const FactoryAgent = defineExtension({
 	name: "factory-agent",
@@ -47,7 +49,10 @@ export const FactoryAgent = defineExtension({
 				if (path === "") return undefined; // the tool rejects it itself
 				const writes = call.name !== "read";
 				const roots = writes && READERS.has(step.role) ? [step.run] : [step.worktree, step.run];
-				if (await inside(path, step.worktree, roots)) return undefined;
+				if (await inside(path, step.worktree, roots)) {
+					const faults = writes && steRoles().has(step.role) ? steBlock(call.name, args, path) : undefined;
+					return faults === undefined ? undefined : { block: faults };
+				}
 				return {
 					block: writes && READERS.has(step.role)
 						? `The ${step.role} agent writes only into RUN_DIR (${step.run}), never into the repo.`
@@ -89,8 +94,9 @@ export async function buildPrompt(options: {
 		skillsPath: options.skillsPath,
 		log: options.log,
 	});
+	const ste = steRoles().has(options.role) ? `\n${stePrompt()}\n\nThe factory checks every prose file you write against these rules. A write that breaks a hard rule is blocked, and the block names each fault. Text in code blocks (also Mermaid) is not checked.\n` : "";
 	return `${body.trim()}
-${skills}
+${skills}${ste}
 Isolation: you are one of several agents working on different tickets at the same time, each in its own git worktree. Work only in your cwd (this ticket's worktree on branch ${options.branch}) and RUN_DIR. Do not read or change other worktrees. Do not use git stash (one stash is shared by every worktree), and do not create, switch, move or delete branches or tags: a git hook refuses it. A server or container you start must use ports PORT_BASE to PORT_BASE+${options.portSpan - 1} (PORT_BASE=${options.portBase}, PORT is set to it) and the compose project in COMPOSE_PROJECT_NAME, and you must stop it before you finish.
 
 Context: RUN_DIR=${options.run} TICKET=${options.cid} BASE=origin/${options.base} ROUND=${options.round} PR=${options.pr ?? "none yet"} VERIFY_CMD=${options.verifyCmd || "<none, use the repo documented checks>"}. Do your job now.`;
