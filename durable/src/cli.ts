@@ -13,6 +13,9 @@ import { git, run, useOriginUrl } from "./git.ts";
 import { GitHubCli } from "./github.ts";
 import { Factory, type HostDeps } from "./host.ts";
 import { requestJson } from "./http.ts";
+import { indexCommand } from "./index/cli.ts";
+import { loadIndexOptions } from "./index/options.ts";
+import { scheduleIndexUpdate } from "./index/sync.ts";
 import { chain, family, loadLanes, modelName, pickModel } from "./lanes.ts";
 import { learnedVerify, lessons } from "./lessons.ts";
 import { SentryClient } from "./sentry.ts";
@@ -38,6 +41,7 @@ const USAGE = `usage: ff <command>
   sentry [sync]              production issues, by Fix first (sync: ask Sentry now)
   fix <sentry issue id>      make a ticket from a Sentry issue and plan its spec
   sprint                     your tasks in the current ClickUp sprint
+  index <command>            the codebase index: build, update, status, search, map, bench, clean
   gc [days]                  remove worktrees of merged or closed PRs, or idle ones
   doctor                     check everything a run needs
   health                     exit 0 when the factory serves (container healthcheck)
@@ -100,6 +104,8 @@ const line = (t: Ticket) => {
 
 async function serve(config: Config) {
 	const factory = await Factory.open(await deps(config));
+	// The repo index warms up in the background (every ticket's own index seeds from it).
+	if (config.indexAuto) scheduleIndexUpdate(loadIndexOptions(process.env, config.indexDir), config.repo, (line) => console.log(line));
 	const { server: http, url } = await startServer(factory, {
 		dashboardFile: join(config.here, "durable", "dashboard", "index.html"),
 		tokenFile: join(config.stateDir, "dash.token"),
@@ -386,6 +392,8 @@ async function main() {
 			for (const t of s.tasks!) console.log(`  ${t.cid.padEnd(12)} ${t.status.padEnd(14)} ${(t.factory?.state ?? "-").padEnd(17)} ${t.title}`);
 			return;
 		}
+		case "index":
+			return indexCommand(config, args);
 		case "gc": {
 			if ((await server(config)) !== null) {
 				const r = await call<{ removed: string[] }>(config, "/api/gc", {});

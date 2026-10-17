@@ -2,12 +2,13 @@
 // conversation's StepDoc names its ticket's worktree and run folder, and the environment is built
 // from it for every call. The factory's own secrets never reach an agent's shell: the model is
 // called by the factory, so agents need no API keys.
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv, ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { run } from "./git.ts";
+import { indexScope } from "./index/options.ts";
 
 /** Names of variables an agent's shell never gets. */
 export const SECRET = /(TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIALS)/i;
@@ -123,6 +124,8 @@ export async function ensureContainer(options: {
 	gitDir: string;
 	cacheVolume: string;
 	extraArgs: readonly string[];
+	/** The code index: mounted read-only at the same path, with INDEX_DIR/INDEX_SCOPE set. */
+	index?: { dir: string; scope: string } | null;
 }): Promise<void> {
 	const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", options.name]);
 	if (state.code === 0 && state.stdout.trim() === "true") return;
@@ -132,10 +135,18 @@ export async function ensureContainer(options: {
 			"-e", "npm_config_store_dir=/cache/pnpm-store", "-e", "YARN_CACHE_FOLDER=/cache/yarn", "-e", "PIP_CACHE_DIR=/cache/pip",
 			"-e", "GOMODCACHE=/cache/go/mod", "-e", "BUN_INSTALL_CACHE_DIR=/cache/bun"]
 		: [];
+	// The index folder is made here (owned by the factory's user, never root inside the container);
+	// the agents may read and search it, never write it: it is the service side's, like Cursor's.
+	const index = options.index ?? null;
+	const indexed = index !== null && index.dir !== "";
+	if (indexed) await mkdir(index!.dir, { recursive: true });
+	const indexArgs = indexed
+		? ["-v", `${index!.dir}:${index!.dir}:ro`, "-e", `INDEX_DIR=${index!.dir}`, ...(index!.scope !== "" ? ["-e", `INDEX_SCOPE=${index!.scope}`] : [])]
+		: [];
 	const started = await run("docker", [
 		"run", "-d", "--name", options.name, "--init", "--label", "software-factory=1",
 		"-v", `${options.worktree}:${options.worktree}`, "-v", `${options.run}:${options.run}`, "-v", `${options.gitDir}:${options.gitDir}`,
-		...cache, ...options.extraArgs, "--entrypoint", "sleep", options.image, "infinity",
+		...indexArgs, ...cache, ...options.extraArgs, "--entrypoint", "sleep", options.image, "infinity",
 	]);
 	if (started.code !== 0) throw new Error(`docker run ${options.image}: ${started.stderr.trim()}`);
 }
@@ -175,9 +186,18 @@ export async function inside(path: string, cwd: string, roots: readonly string[]
 export type StepTarget = { worktree: string; run: string; cell: Record<string, string>; container: string | null };
 export type EnvFactory = (step: StepTarget) => ExecutionEnv;
 
-/** SANDBOX=none: this machine's environment without secrets, plus the cell. */
-export const nodeEnv: EnvFactory = (step) =>
-	new AgentExecutionEnv({ cwd: step.worktree, env: agentShellEnv(process.env, step.cell), pidFile: join(step.run, "exec.pids") });
+/** SANDBOX=none: this machine's environment without secrets, plus the cell and the code index's
+ *  variables — the same ones the ticket containers get at `docker run`. */
+export const nodeEnvWith = (indexDir: string): EnvFactory => (step) =>
+	new AgentExecutionEnv({
+		cwd: step.worktree,
+		env: {
+			...agentShellEnv(process.env, step.cell),
+			INDEX_DIR: indexDir,
+			...(step.cell.FACTORY_TICKET ? { INDEX_SCOPE: indexScope(step.cell.FACTORY_TICKET) } : {}),
+		},
+		pidFile: join(step.run, "exec.pids"),
+	});
 /** SANDBOX=docker: only the cell's variables go into the container; the image sets the rest. */
 export const dockerEnv: EnvFactory = (step) => {
 	if (step.container === null) throw new Error("SANDBOX=docker, but the ticket has no container");

@@ -41,6 +41,7 @@ export function testConfig(repo: string, data: string, extra: Record<string, str
 			SKILLS_PATH: join(here, "skills"),
 			TRACKER_COMMENTS: "1",
 			PR_LABEL: "test-label",
+			INDEX_AUTO: "0",
 			...extra,
 		},
 		here,

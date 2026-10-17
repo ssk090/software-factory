@@ -33,6 +33,8 @@ import type { Config } from "./config.ts";
 import { addEvent, type Revision, StepDoc, type StepRecord, type StepUsage, type Ticket, TicketDoc, type TicketEvent, TicketIndex } from "./docs.ts";
 import { type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
 import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, run, testsKept, writeGuardHooks } from "./git.ts";
+import { indexScope, loadIndexOptions } from "./index/options.ts";
+import { scheduleIndexUpdate } from "./index/sync.ts";
 import { learn, learnedVerify, learnVerify, readLessons } from "./lessons.ts";
 import { formatUnneeded, keptOnPurpose, notInPlan, unneededFiles } from "./scope.ts";
 import { formatFindings, redact, scanBranch } from "./secrets.ts";
@@ -497,6 +499,12 @@ export function createPipeline(deps: PipelineDeps) {
 		const cp = task.state.checkpoint;
 		const ticket = await ticketOf(task, runtime, context);
 		const { run, worktree } = paths(ticket);
+		// The code the run generated so far reaches the index before the next agent looks for it:
+		// the ticket's own index (seeded from the repo's once, so only its changes are embedded).
+		if (config.indexAuto) {
+			const options = { ...loadIndexOptions(process.env, config.indexDir), scope: indexScope(ticket.cid) };
+			scheduleIndexUpdate(options, worktree, (line) => log(ticket, line), { seedRoot: config.repo });
+		}
 		const earlier = ticket.steps.filter((s) => s.role === role && s.round === round);
 		const attempt = earlier.length + 1;
 		const coder = ticket.steps.findLast((s) => s.role === "code" && s.status === "done");
@@ -560,6 +568,7 @@ export function createPipeline(deps: PipelineDeps) {
 			verifyCmd: config.verifyCmd, portBase: config.cellPortStart + (ticket.slot ?? 0) * config.cellPortSpan,
 			portSpan: config.cellPortSpan, repoSkillDirs: config.repoSkillDirs, skillsPath: config.skillsPath,
 			lessons: await readLessons(config.stateDir, step.role),
+			index: config.indexAuto,
 			log: (line) => log(ticket, line),
 		});
 		const submission = await handle.submit({ type: "input", content: prompt, requestId: `step:${name}` }, context);
@@ -791,9 +800,13 @@ export function createPipeline(deps: PipelineDeps) {
 					name, image: config.sandboxImage, worktree: ticket.worktree!, run: ticket.run!,
 					gitDir: await gitOk(config.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"),
 					cacheVolume: config.cacheVolume, extraArgs: config.sandboxArgs,
+					index: { dir: config.indexDir, scope: indexScope(ticket.cid) },
 				});
 			}
 			log(ticket, `worktree ${how} on ${ticket.branch}`);
+			// The repo's own index (the code every ticket is cut from), refreshed in the background: the
+			// fetch above may have moved the base branch. Ticket indexes seed from it (step start).
+			if (config.indexAuto) scheduleIndexUpdate(loadIndexOptions(process.env, config.indexDir), config.repo, (line) => deps.log(line));
 			await note(runtime, context, ticket.id, { kind: "git", text: `Worktree ${how} on ${ticket.branch}` });
 			// A run after one that was stopped or blocked continues where that one was.
 			if (ticket.resume !== null && !task.input.fresh) {

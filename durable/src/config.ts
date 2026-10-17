@@ -45,6 +45,10 @@ export type Config = {
 	readonly sandboxImage: string;
 	readonly sandboxArgs: readonly string[];
 	readonly cacheVolume: string;
+	/** Where the codebase indexes live (state/index, inside the data folder every sandbox sees). */
+	readonly indexDir: string;
+	/** INDEX_AUTO=0: never refresh indexes in the background (the commands still work). */
+	readonly indexAuto: boolean;
 	readonly gcDays: number;
 	readonly clickup: {
 		readonly token: string;
@@ -158,6 +162,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		sandboxImage: env.SANDBOX_IMAGE || "software-factory",
 		sandboxArgs: list(env.SANDBOX_ARGS, /\s+/),
 		cacheVolume: env.CACHE_VOLUME ?? "factory-cache",
+		indexDir: resolve(env.INDEX_DIR || join(dataDir, "state", "index")),
+		indexAuto: flag(env.INDEX_AUTO, true),
 		gcDays: num(env.GC_DAYS, 14, "GC_DAYS"),
 		clickup,
 		sentry: {

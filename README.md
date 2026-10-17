@@ -137,6 +137,14 @@ Agents (`agents/*.md`, see `agents/README.md`): spec writer, planner, test write
 - **Fail closed:** if the ticket's branch is checked out in another folder, the ticket is blocked instead of mixing two runs on one branch.
 - **Cleanup:** `ff gc` removes a worktree once its PR is merged or closed (and the local branch once merged), or after `GC_DAYS` idle.
 
+### Code index (what the agents search)
+Before an agent walks files, it can search the codebase: `ff index search "<what you need>"` answers with `path:line` hits, and the step prompt tells it so. The index is refreshed in the background while tickets run: the repo's own after a worktree is cut (from the checkout, or from `INDEX_REF` such as `origin/main`, read through a hidden snapshot worktree), each ticket's own at every step start.
+- **A ticket's index starts as the repo's:** it is seeded from that store once and then follows the worktree, so only the ticket's changes are read, chunked and embedded. A read that finds no ticket index yet falls back to the repo's and says so.
+- **Containers see it read-only:** `state/index` is mounted at the same path with `INDEX_DIR` (and `INDEX_SCOPE` for the ticket's own store). Agents search it, never write it; builds and refreshes run outside the sandbox.
+- **Offline by default:** the built-in embedder is deterministic feature hashing — no network, no model download. Keyword (BM25) and vector results are fused (reciprocal rank fusion). `INDEX_EMBED=http` points the embedder at any OpenAI-compatible `/embeddings` endpoint (a local Ollama, say). An index built with one embedder is never queried with another: the search says so and falls back to keywords.
+- **The sandbox's own rules:** git's ignore rules decide, binary files and files over `INDEX_MAX_FILE_BYTES` (10 MiB, the cap Cursor's client uses) are skipped, and the secret paths agents may never read (`.env` and friends) never enter it.
+- **By hand:** `ff index build|update|status|search|map|bench|clean`; `ff index map` prints the generated code map, `ff index bench` measures a search against reading the whole tree. `INDEX_AUTO=0` turns the background refreshes off.
+
 ### Skills
 Every agent file starts with a header such as `skills: implement, tdd, ponytail`. A ticket can add skills with a `Skills: a, b` line in its description.
 - **Vendored sets:** `skills/superpowers/` ([Superpowers](https://github.com/obra/superpowers)), `skills/ponytail/` ([ponytail](https://github.com/dietrichgebert/ponytail)) and `skills/mattpocock/` ([mattpocock/skills](https://github.com/mattpocock/skills)), all MIT. Each has a SOURCE.md: what was copied, what was left out and why, and how to update it.
@@ -200,6 +208,7 @@ Every model request of every agent goes through one throttle (`durable/src/throt
     ff usage                   today's model spend per provider, the rate limits, what is waiting
     ff sentry [sync] | fix <issue id> | sprint
     ff gc [days]               remove worktrees of merged or closed PRs, or idle ones
+    ff index <cmd>             the code index agents search: build, update, status, search, map, bench, clean
     ff doctor                  check tools, repo, base branch, gh, ClickUp, sprint, Sentry, sandbox, models
     ff health                  exit 0 when the factory serves (container healthcheck)
     ff login [KEY]             save a key in config.env (hidden input) and show the model logins
@@ -256,6 +265,7 @@ Every setting, with its default, is in `config.example.env`.
 | `state/factory.pid`, `state/dash.url`, `state/dash.token` | the serving factory: its pid (one owner), its address, this start's token |
 | `state/usage.json` | today's model spend, per provider (the daily budget) |
 | `state/lessons.md` | lessons from repaired failures, read by the agents that change code |
+| `state/index/<repo>/` | the code index: the Merkle manifest, chunks and vectors (a ticket's own store is `<repo>-<scope>`, seeded from it) |
 | `runs/<ticket>/` | the run folder agents share: `ticket.md`, `comments.md`, `spec.md`, `plan.md`, `tests.md`, `review-N.md`, `review-N.comments.json`, `judge.json`, `pre-push.log`, `verify-N.log`, `failure-N.md`, `repair-N.md`, `route.log`, `skills.log`, `guard.log`, `git-hooks/`, `skills/` |
 | `worktrees/<ticket>/` | the ticket's git worktree |
 | `agents/*.md` | the agents' prompts |
@@ -276,6 +286,7 @@ Every setting, with its default, is in `config.example.env`.
 | `src/lanes.ts` | model choice per role |
 | `src/secrets.ts` | the secret scan before every push, and redaction of what the factory posts |
 | `src/lessons.ts` | lessons the coordinator learns from failures, for the agents that change code |
+| `src/index/` | the code index: the walk (gitignore, binary, size, secret paths), the Merkle manifest, chunking, embedders, search, the store, the sync engine; `ff index` |
 | `src/ste.ts` | Simplified Technical English for STE_ROLES: the prompt rules, the write gate, the file check (agent-ste) |
 | `src/throttle.ts` | every model request: rate limits per provider, the daily budget, paused tickets' requests |
 | `src/tracker.ts`, `src/github.ts`, `src/sentry.ts`, `src/http.ts` | ClickUp, GitHub (`gh`), Sentry |
@@ -297,7 +308,7 @@ Every setting, with its default, is in `config.example.env`.
     # with Docker: the whole pipeline in the docker sandbox
     docker build -t software-factory . && cd durable && SF_DOCKER_PIPELINE=1 SANDBOX_TEST_IMAGE=software-factory npm test
 
-No network: a scratch repo with an origin, a fake tracker and git host, and pi-ai's faux model playing every agent from its prompt (`durable/test/support.ts`). They cover the whole pipeline to a reviewed PR; the gate and your note; a restart mid tool call (the same conversation continues and hears its call was interrupted); `kill -9` of the factory mid step (it continues, and the command it left running is ended); frozen tests; the verify gate's second try; steering; stopping; pausing mid-step (the step's next request waits, its paused time is not its own) and the timeline it leaves; the daily budget pausing tickets; the throttle's rate windows, budget ledger and holds; the reviewer's family rule; Sentry paging, merging, ranking and *Fix this*; the sprint; a failing model moving to the next one; running a ticket again after a stop and after a finished run; the dashboard's host, token and password rules and its API; and, with Docker, the sandbox container (variables, no host secrets, killing a process group, reaping). CI also builds the image and runs a whole pipeline in the docker sandbox (`SF_DOCKER_PIPELINE=1`).
+No network: a scratch repo with an origin, a fake tracker and git host, and pi-ai's faux model playing every agent from its prompt (`durable/test/support.ts`). They cover the whole pipeline to a reviewed PR; the gate and your note; a restart mid tool call (the same conversation continues and hears its call was interrupted); `kill -9` of the factory mid step (it continues, and the command it left running is ended); frozen tests; the verify gate's second try; steering; stopping; pausing mid-step (the step's next request waits, its paused time is not its own) and the timeline it leaves; the daily budget pausing tickets; the throttle's rate windows, budget ledger and holds; the reviewer's family rule; Sentry paging, merging, ranking and *Fix this*; the sprint; a failing model moving to the next one; running a ticket again after a stop and after a finished run; the dashboard's host, token and password rules and its API; and, with Docker, the sandbox container (variables, no host secrets, killing a process group, reaping) and a ticket container's `ff index search` against the read-only index mount. The code index has its own suite: the Merkle tree, the chunker's line ranges, what the walk skips (ignored, binary, oversized, secret), the delta update, search and its filters, the ticket's seeded scope, and `INDEX_REF` through a snapshot. CI also builds the image and runs a whole pipeline in the docker sandbox (`SF_DOCKER_PIPELINE=1`).
 
 ## Roadmap
 Planned, not built: agents that choose their skills from Superpowers and mattpocock/skills, Jev (a decision model) for the factory's choices, and models routed by the ticket, the spec and the plan, after [jroute](https://github.com/ssk090/jroute). See [ROADMAP.md](ROADMAP.md).

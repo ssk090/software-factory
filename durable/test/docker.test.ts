@@ -10,6 +10,8 @@ import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import type { TaskId } from "@earendil-works/pi-durable";
 import { dockerEnv, ensureContainer, reapOrphans, removeContainer } from "../src/env.ts";
 import { Factory } from "../src/host.ts";
+import { loadIndexOptions } from "../src/index/options.ts";
+import { updateIndex } from "../src/index/sync.ts";
 import { FakeGitHost, FakeTracker, fauxAgents, lanes, scratchRepo, testConfig } from "./support.ts";
 
 const IMAGE = process.env.SANDBOX_TEST_IMAGE || "node:22-bookworm-slim";
@@ -109,6 +111,35 @@ describe("pipeline in the docker sandbox", { skip: (!docker || process.env.SF_DO
 		} finally {
 			await factory.close();
 			await removeContainer("factory-t-d");
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("the ticket container searches the code index, and cannot write it", async () => {
+		const w = await scratchRepo(homedir());
+		const name = `factory-index-${process.pid}`;
+		try {
+			await writeFile(join(w.repo, "zephyr.txt"), "the zephyr marshmallow protocol retries safely\n");
+			w.git(w.repo, "add", ".");
+			w.git(w.repo, "commit", "-q", "-m", "zephyr");
+			const indexDir = join(w.root, "index");
+			const options = loadIndexOptions({ INDEX_DIR: indexDir }, indexDir);
+			assert.equal((await updateIndex(options, w.repo, () => {})).status, "built");
+			await ensureContainer({
+				name, image: process.env.SANDBOX_TEST_IMAGE || "software-factory", worktree: w.repo, run: join(w.root, "run"),
+				gitDir: join(w.root, "git"), cacheVolume: "", extraArgs: [], index: { dir: indexDir, scope: "" },
+			});
+			// What an agent shell has (git.ts cellEnv): git may read the mount that is owned by the host user.
+			const git = ["-e", "GIT_CONFIG_COUNT=1", "-e", "GIT_CONFIG_KEY_0=safe.directory", "-e", "GIT_CONFIG_VALUE_0=*"];
+			const out = execFileSync("docker", ["exec", "-w", w.repo, ...git, name, "ff", "index", "search", "zephyr marshmallow"], { encoding: "utf8" });
+			assert.match(out, /zephyr\.txt:1-\d+\s+keyword #1/, out);
+			assert.match(out, /\d+ hit\(s\) in \d+ ms/, out);
+			assert.throws(
+				() => execFileSync("docker", ["exec", "-w", w.repo, ...git, name, "sh", "-c", 'touch "$INDEX_DIR/probe"'], { stdio: "ignore" }),
+				"the index folder is mounted read-only",
+			);
+		} finally {
+			await removeContainer(name);
 			await rm(w.root, { recursive: true, force: true });
 		}
 	});

@@ -91,6 +91,8 @@ export async function buildPrompt(options: {
 	skillsPath: readonly string[];
 	/** Lessons from earlier failures for this role (lessons.ts), or "". */
 	lessons?: string;
+	/** The code index is on (INDEX_AUTO): tell the agent how to search it. */
+	index?: boolean;
 	log: (line: string) => void;
 }): Promise<string> {
 	const { header, body } = await readAgentFile(options.here, options.role);
@@ -109,7 +111,7 @@ export async function buildPrompt(options: {
 ${skills}${ste}${options.lessons ?? ""}
 Isolation: you are one of several agents working on different tickets at the same time, each in its own git worktree. Work only in your cwd (this ticket's worktree on branch ${options.branch}) and RUN_DIR. Do not read or change other worktrees. Do not use git stash (one stash is shared by every worktree), and do not create, switch, move or delete branches or tags: a git hook refuses it. A server or container you start must use ports PORT_BASE to PORT_BASE+${options.portSpan - 1} (PORT_BASE=${options.portBase}, PORT is set to it) and the compose project in COMPOSE_PROJECT_NAME, and you must stop it before you finish.
 
-Context: RUN_DIR=${options.run} TICKET=${options.cid} BASE=origin/${options.base} ROUND=${options.round} PR=${options.pr ?? "none yet"} VERIFY_CMD=${options.verifyCmd || "<none, use the repo documented checks>"}. Do your job now.`;
+Context: RUN_DIR=${options.run} TICKET=${options.cid} BASE=origin/${options.base} ROUND=${options.round} PR=${options.pr ?? "none yet"} VERIFY_CMD=${options.verifyCmd || "<none, use the repo documented checks>"}.${options.index ? ` Before walking files, search the code index: ff index search "<what you need>" answers with path:line hits (--k N for more, ff index map for the repo map).` : ""} Do your job now.`;
 }
 
 /** Roles that exist: an agent file in agents/ (deleting docs.md turns the docs writer off). */
