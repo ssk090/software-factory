@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import type { TaskId } from "@earendil-works/pi-durable";
@@ -113,11 +113,13 @@ describe("pipeline in the docker sandbox", { skip: (!docker || process.env.SF_DO
 			await removeContainer("factory-t-d");
 			// Agent commands run as root inside the container, so the git objects and files they wrote
 			// under the mount are root-owned and the runner cannot unlink them. Docker Desktop maps
-			// ownership to the host user; a Linux runner does not, so clear those with a container.
+			// ownership to the host user; a Linux runner does not, so clear those with a container
+			// (its parent is mounted, or the folder itself would be busy as a mount point).
 			await rm(w.root, { recursive: true, force: true }).catch((error: NodeJS.ErrnoException) => {
 				if (error.code !== "EACCES" && error.code !== "EPERM") throw error;
 				console.error(`cleanup: ${error.code} removing ${w.root}; cleaning with a container`);
-				execFileSync("docker", ["run", "--rm", "--entrypoint", "rm", "-v", `${w.root}:${w.root}`, process.env.SANDBOX_TEST_IMAGE || "software-factory", "-rf", w.root]);
+				const parent = dirname(w.root);
+				execFileSync("docker", ["run", "--rm", "--entrypoint", "rm", "-v", `${parent}:${parent}`, process.env.SANDBOX_TEST_IMAGE || "software-factory", "-rf", w.root]);
 			});
 		}
 	});
