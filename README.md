@@ -141,7 +141,7 @@ Agents (`agents/*.md`, see `agents/README.md`): spec writer, planner, test write
 Before an agent walks files, it can search the codebase: `ff index search "<what you need>"` answers with `path:line` hits, and the step prompt tells it so. The index is refreshed in the background while tickets run: the repo's own after a worktree is cut (from the checkout, or from `INDEX_REF` such as `origin/main`, read through a hidden snapshot worktree), each ticket's own at every step start.
 - **A ticket's index starts as the repo's:** it is seeded from that store once and then follows the worktree, so only the ticket's changes are read, chunked and embedded. A read that finds no ticket index yet falls back to the repo's and says so.
 - **Containers see it read-only:** `state/index` is mounted at the same path with `INDEX_DIR` (and `INDEX_SCOPE` for the ticket's own store). Agents search it, never write it; builds and refreshes run outside the sandbox.
-- **Offline by default:** the built-in embedder is deterministic feature hashing — no network, no model download. Keyword (BM25) and vector results are fused (reciprocal rank fusion). `INDEX_EMBED=http` points the embedder at any OpenAI-compatible `/embeddings` endpoint (a local Ollama, say). An index built with one embedder is never queried with another: the search says so and falls back to keywords.
+- **Offline by default:** the built-in embedder is deterministic feature hashing — no network, no model download. Keyword (BM25) and vector results are fused (reciprocal rank fusion). `INDEX_EMBED=http` points the embedder at any OpenAI-compatible `/embeddings` endpoint (a local Ollama, say). An index built with one embedder is never queried with another: the search says so and falls back to keywords; switching `INDEX_EMBED` re-embeds the store on its next update.
 - **The sandbox's own rules:** git's ignore rules decide, binary files and files over `INDEX_MAX_FILE_BYTES` (10 MiB, the cap Cursor's client uses) are skipped, and the secret paths agents may never read (`.env` and friends) never enter it.
 - **By hand:** `ff index build|update|status|search|map|bench|clean`; `ff index map` prints the generated code map, `ff index bench` measures a search against reading the whole tree. `INDEX_AUTO=0` turns the background refreshes off.
 
@@ -301,6 +301,7 @@ Every setting, with its default, is in `config.example.env`.
 - **A blocked ticket:** the reason is on the dashboard and in `ff show <ticket>`. Fix the cause, then *Run again* (it continues where it stopped) or *Start fresh*.
 - **The dashboard says "missing or wrong X-Factory-Token":** the factory restarted; reload the page.
 - **Docker sandbox:** `docker build -t software-factory .` after pulling changes; a running ticket's container is `factory-<ticket>`.
+- **`ff gc` cannot delete a worktree (permission denied):** on a Linux host the agents' files are root-owned (see Known limits); `sudo rm -rf worktrees/<ticket>`, then `git worktree prune`.
 
 ## Tests
 
@@ -319,3 +320,4 @@ Planned, not built: agents that choose their skills from Superpowers and mattpoc
 - **Tracker:** ClickUp only. **Git host:** GitHub only, through `gh`.
 - **One process per session:** run one `ff serve` per data folder (it refuses a second one).
 - **`SANDBOX=none`:** file tools are confined to the worktree and run folder, but an agent's shell can read the rest of the machine. Use docker for untrusted tickets.
+- **`SANDBOX=docker` on Linux, as a non-root user:** agent commands run as root in their containers, so the files they write into the shared mounts — their edits, the dependencies `SETUP_CMD` installed, the git objects of their commits — are owned by root on this machine. Runs work (the factory reads those files and pushes them), but `ff gc` cannot delete such a worktree: `sudo rm -rf worktrees/<ticket>`, then `git worktree prune`. Docker Desktop (macOS, Windows) maps file ownership to your user, so this does not happen there.
