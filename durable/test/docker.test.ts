@@ -111,7 +111,14 @@ describe("pipeline in the docker sandbox", { skip: (!docker || process.env.SF_DO
 		} finally {
 			await factory.close();
 			await removeContainer("factory-t-d");
-			await rm(w.root, { recursive: true, force: true });
+			// Agent commands run as root inside the container, so the git objects and files they wrote
+			// under the mount are root-owned and the runner cannot unlink them. Docker Desktop maps
+			// ownership to the host user; a Linux runner does not, so clear those with a container.
+			await rm(w.root, { recursive: true, force: true }).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "EACCES" && error.code !== "EPERM") throw error;
+				console.error(`cleanup: ${error.code} removing ${w.root}; cleaning with a container`);
+				execFileSync("docker", ["run", "--rm", "--entrypoint", "rm", "-v", `${w.root}:${w.root}`, process.env.SANDBOX_TEST_IMAGE || "software-factory", "-rf", w.root]);
+			});
 		}
 	});
 
