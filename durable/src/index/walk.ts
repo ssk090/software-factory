@@ -34,7 +34,7 @@ export const BINARY_EXTENSIONS = new Set([
 const SECRET_PATH = new RegExp(
 	"(?:^|/)(?:" +
 		"config\\.env|\\.netrc|\\.git-credentials|dash\\.token|factory\\.sqlite(?:-[a-z]+)?|credentials\\.json|" +
-		"\\.ssh/|\\.aws/credentials|\\.docker/config\\.json|\\.config/gh/hosts\\.yml|" +
+		"\\.ssh/|\\.aws/credentials|\\.docker/config\\.json|\\.config/gh/hosts\\.yml|\\.chip1/|qa-auth\\.json|" +
 		"\\.env(?!\\.(?:example|sample|template|dist))" +
 		")",
 );

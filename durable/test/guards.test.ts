@@ -151,4 +151,11 @@ describe("guardrails", () => {
 		}
 		for (const c of ["cat src/config.ts", "cat .env.example", "pnpm install"]) assert.ok(!SECRET_PATHS.test(c), c);
 	});
+
+	it("keeps agents off the chip1 QA sign-in account, at home and mounted in the sandbox", () => {
+		for (const c of ["cat ~/.chip1/qa-auth.json", "cd ~/.chip1 && ls", "ls ~/.chip1/", "cat /secrets/qa-auth.json", 'jq . "$HOME/.chip1/qa-auth.json"', "CHIP1_QA_AUTH_FILE=/secrets/qa-auth.json node x.mjs"]) {
+			assert.ok(SECRET_PATHS.test(c), c);
+		}
+		for (const c of ["cat packages/build-config/qaAuth.example.json", "cat src/chip1.ts"]) assert.ok(!SECRET_PATHS.test(c), c);
+	});
 });

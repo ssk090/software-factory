@@ -13,6 +13,7 @@ import { indexScope, loadIndexOptions } from "../src/index/options.ts";
 import { searchIndex } from "../src/index/search.ts";
 import { IndexStore } from "../src/index/store.ts";
 import { checkIndex, repoIdOf, updateIndex } from "../src/index/sync.ts";
+import { isSecretPath } from "../src/index/walk.ts";
 import { scratchRepo } from "./support.ts";
 
 const optionsFor = (data: string, extra: Record<string, string> = {}) => {
@@ -84,6 +85,11 @@ describe("index", { timeout: 120_000 }, () => {
 		} finally {
 			await rm(w.root, { recursive: true, force: true });
 		}
+	});
+
+	it("never indexes the chip1 QA sign-in account, wherever it sits", () => {
+		for (const path of [".chip1/qa-auth.json", "home/.chip1/notes.txt", "qa-auth.json", "secrets/qa-auth.json"]) assert.ok(isSecretPath(path), path);
+		for (const path of ["packages/build-config/qaAuth.example.json", "src/chip1.ts"]) assert.ok(!isSecretPath(path), path);
 	});
 
 	it("search answers with paths, line ranges and both ranks", async () => {

@@ -18,8 +18,8 @@ const FILE_TOOLS = new Set(["read", "write", "edit"]);
 const GIT_PUSH = /\bgit\b(?:\s+-[cC]\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+push\b/;
 /** The repo's git hooks are its checks: no agent turns them off. */
 export const HOOK_BYPASS = /--no-verify\b|\b(?:HUSKY|LEFTHOOK)=0\b|\bSKIP_SIMPLE_GIT_HOOKS=1\b|\bcore\.hooksPath\b|\bgit\s+commit\b[^|;&\n]*\s-[a-zA-Z]*n[a-zA-Z]*(?=\s|$)/;
-/** Files that hold the factory's or the machine's secrets: no agent reads them. */
-export const SECRET_PATHS = /(?:^|[\s"'=:/])(?:config\.env|\.ssh\/|\.aws\/credentials|\.netrc|\.git-credentials|dash\.token|factory\.sqlite|\.docker\/config\.json|\.config\/gh\/hosts\.yml)/;
+/** Files that hold the factory's or the machine's secrets (and the chip1 dev sign-in's QA account, ~/.chip1/qa-auth.json): no agent reads them. */
+export const SECRET_PATHS = /(?:^|[\s"'=:/])(?:config\.env|\.ssh\/|\.aws\/credentials|\.netrc|\.git-credentials|dash\.token|factory\.sqlite|\.docker\/config\.json|\.config\/gh\/hosts\.yml|\.chip1(?![\w.-])|qa-auth\.json)/;
 
 /**
  * The guard (a beforeTool hook): file tools stay inside the ticket's worktree and run folder (after
