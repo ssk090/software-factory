@@ -428,8 +428,8 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		const w = await world({}, async (root) => ({ VERIFY_CMD: `test -f ${root}/flaky || { touch ${root}/flaky; false; }` }));
 		const factory = await Factory.open(w.deps);
 		try {
-			await factory.start("T-12", { gate: false });
-			const t = await settle(factory, "T-12");
+			await factory.start("T-40", { gate: false });
+			const t = await settle(factory, "T-40");
 			assert.equal(t.state, "in_review", t.blocked ?? "");
 			assert.deepEqual(t.verify.filter((v) => v.round === 1).map((v) => v.ok), [true], "the base passed on the second run");
 			assert.ok(!t.events.some((e) => /already fails VERIFY_CMD/.test(e.text)), "a flaky base is not red");
@@ -444,8 +444,8 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		const w = await world({}, { VERIFY_CMD: "! test -f README.md" });
 		const factory = await Factory.open(w.deps);
 		try {
-			await factory.start("T-14", { gate: false });
-			const t = await settle(factory, "T-14");
+			await factory.start("T-41", { gate: false });
+			const t = await settle(factory, "T-41");
 			assert.equal(t.state, "in_review", t.blocked ?? "");
 			const failed = await readFile(join(t.run!, "verify-failed.md"), "utf8");
 			assert.match(failed, /failed \(exit 1\)/);
