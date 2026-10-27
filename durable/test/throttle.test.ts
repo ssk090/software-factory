@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import type { Usage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import type { ModelUse } from "../src/metrics.ts";
 import { dayOf, Throttle } from "../src/throttle.ts";
 
 const usage = (tokens: number, cost: number): Usage => ({
@@ -110,5 +111,27 @@ describe("throttle", { timeout: 30_000 }, () => {
 		const aborted = await stream.result();
 		assert.equal(aborted.stopReason, "aborted");
 		assert.equal(t.status().today.total.requests, 1, "the held request never went out");
+	});
+
+	it("reports each request with its first-token time and session, until the listener stops", async () => {
+		const faux = fauxProvider({ models: [{ id: "faux-1" }] });
+		faux.setResponses([fauxAssistantMessage("hello"), fauxAssistantMessage("again")]);
+		const models = createModels();
+		models.setProvider(faux.provider);
+		const t = await Throttle.open(limits(), { file: null, pollMs: 20 });
+		const uses: ModelUse[] = [];
+		const stop = t.watch((use) => uses.push(use));
+		const wrapped = t.wrap(models);
+		const model = wrapped.getModel("faux", "faux-1")!;
+		await wrapped.streamSimple(model, { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }, { sessionId: "sess-1" }).result();
+		assert.equal(uses.length, 1);
+		const use = uses[0]!;
+		assert.equal(use.provider, "faux");
+		assert.equal(use.model, "faux-1");
+		assert.equal(use.sessionId, "sess-1");
+		assert.ok(use.ttftMs !== null && use.ttftMs >= 0, "the first token was timed");
+		stop();
+		await wrapped.streamSimple(model, { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }).result();
+		assert.equal(uses.length, 1, "the listener is gone");
 	});
 });

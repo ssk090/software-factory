@@ -46,6 +46,7 @@ Extensions (shadcn has no status colours; these are ours, tuned so text on a 10%
 | `--sidebar`, `--sidebar-accent`, `--sidebar-border` | match the neutral sidebar theme | | sidebar surface, hover/active row, edge |
 
 The sidebar values are written to match shadcn's neutral sidebar theme but were not fetched from it: compare them with the docs if you need them exact.
+`--violet` and `--teal` are two extra hues: the first-token and input-token lines of the Performance graphs.
 
 ## 4. Typography
 - Font: the system stack (`system-ui`). shadcn's own starters use Geist, but the CSP allows no external font; self-host one under the same origin if you want it.
@@ -59,8 +60,9 @@ The sidebar values are written to match shadcn's neutral sidebar theme but were 
 - Controls are 32px (buttons) or 36px (fields) tall.
 
 ## 6. Layout (the Sidebar block)
-- **Sidebar, 232px, sticky, collapsible:** brand, a "Work" group with the three views (icon, label, count), and the "updated" time at the foot. The panel button in its header, or Ctrl/Cmd+B, collapses it to a 56px icon rail (the nav buttons keep their `title` as a tooltip); the choice is kept in `localStorage` (`sf.sidebar`). Under 760px it is always a top bar and the toggle is hidden.
+- **Sidebar, 232px, sticky, collapsible:** brand, a "Work" group with the four views (icon, label, count), and the "updated" time at the foot. The panel button in its header, or Ctrl/Cmd+B, collapses it to a 56px icon rail (the nav buttons keep their `title` as a tooltip); the choice is kept in `localStorage` (`sf.sidebar`). Under 760px it is always a top bar and the toggle is hidden.
 - **Page:** the budget banner when the daily budget is spent, a row of four stat cards (*To decide*, *Sprint tasks*, *Active runs*, *Spend today*; two per row under 1100px), then one Card per view.
+- **Performance view:** its own four stat cards (CPU of this process, agents, tokens today, first token), then one Card per signal: CPU, model tokens and first-token time. Each holds a strip chart: five minutes on the long axis, a short value axis, a legend with the current value, and a gap where there was no request. The last Card lists the running steps and the last twelve that ended, with time, tokens, tokens a second, first-token time and cost. The refresh Select (1, 5 or 10 seconds) sits in the view's bar and its choice is kept in `localStorage` (`sf.perfEvery`).
 - **Detail panel:** opening a ticket adds a right column (`minmax(380px, 42%)`), sticky, scrolling by itself. It is the Sheet pattern without the overlay, because the list must stay visible. Top to bottom: title, state and links, a notice when paused, an Alert when blocked, the controls (Pause or Continue, Stop; Run again and Start fresh when it ended) with the run's steps, tokens and cost on the right, the approval box at the gate, then Tabs: *Timeline* (with the live view and steer), *Logs*, *Files*.
 - **Sidebar foot:** the spend meter (today against the budget; amber from 80%, red at 100%), a line when a request waits for a rate limit, and the "updated" time.
 - Tables scroll sideways inside their Card rather than breaking the layout.
@@ -99,6 +101,8 @@ Each row says which shadcn component the class stands for, so a future port is m
 | `.tl-step` | Item, as a button | an agent step under its phase: status Badge, name, model (truncated), own time, tokens, cost; opens the live view; `.watching` marks the one shown |
 | `.tl-note` | muted text | what happened in the phase: verify, review, PR, pauses; warning and destructive colours for those levels |
 | `table.logs` | Table | Time, Level (small Badge), Event with its kind and step or phase under it; Select for level and kind, Input to search; newest first |
+| `.strip`, `.strip-legend`, `.strip-key`, `.strip-axis` | (ours: a strip chart) | one graph per signal: the last five minutes on the long x axis and a short y axis, an area in the series colour, a dashed grid, the current value in the legend, a gap for a null value. The series colours are the status tokens (`--info`, `--warning`, `--success`, `--teal`, `--violet`); the text is `--muted-foreground` |
+| `.perf-stats`, `.perf-card` | SectionCards and Card | the Performance view's stat row and its stacked cards (16px apart) |
 | `.meter` | Progress | the spend meter |
 | `.banner` | Alert (warning) | the budget is spent; above everything on the page |
 | `.notice` | Alert (warning), inline | the ticket is paused, why, and what happens next |
@@ -118,7 +122,7 @@ Each row says which shadcn component the class stands for, so a future port is m
 | Step `done` / `failed` / other | ok / bad / run | the status |
 
 ## 8. Behaviour
-- **Loading:** the page fills in within one refresh (5s). Until the first answer, counts read 0 and tables are empty.
+- **Loading:** the page fills in within one refresh (5s). Until the first answer, counts read 0 and tables are empty. The Performance view polls its own endpoint every 1, 5 or 10 seconds, only while it is the open view; the server samples once a second, so a slower choice still has every second in the graph.
 - **Empty:** every table says why it is empty and what to do.
 - **Messages and errors:** a toast (`toast(text, "success" | "error")`; `flash(text, bad)` calls it). Bottom right, click to dismiss, success 4s, error 8s, icon in the status colour, `role="alert"` for errors. The same message shown again renews the toast on screen instead of stacking, so a failing 5s refresh shows one. Use a toast for the result of something the user did and for failures to load; use an `Alert` inside the Card for a standing condition of that data (a failed Sentry sync, a blocked ticket). The sidebar foot carries only the passive "updated" time.
 - **Focus:** every interactive element shows the ring on `:focus-visible`. Hover never carries meaning that focus does not.

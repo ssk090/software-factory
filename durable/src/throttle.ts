@@ -6,6 +6,7 @@
 // state/usage.json, so a restart does not reset it.
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { type Api, type AssistantMessage, createAssistantMessageEventStream, type Model, type Models, type Usage } from "@earendil-works/pi-ai";
+import type { ModelUse } from "./metrics.ts";
 
 export type Limits = { readonly rpm: number; readonly tpm: number; readonly dailyBudgetUsd: number };
 export type Spend = { requests: number; tokens: number; cost: number };
@@ -65,6 +66,7 @@ export class Throttle {
 	/** Requests of the current window, per provider; their tokens once they answered. */
 	private readonly recent = new Map<string, Slot[]>();
 	private readonly waiting = new Set<Waiting>();
+	private readonly watchers = new Set<(use: ModelUse) => void>();
 	private saving: Promise<void> = Promise.resolve();
 
 	private constructor(limits: Limits, options: ThrottleOptions) {
@@ -185,6 +187,24 @@ export class Throttle {
 		await this.saving;
 	}
 
+	/** Listen to every model request, for the dashboard's Performance page. Returns an unsubscribe. */
+	watch(watcher: (use: ModelUse) => void): () => void {
+		this.watchers.add(watcher);
+		return () => {
+			this.watchers.delete(watcher);
+		};
+	}
+
+	private notify(use: ModelUse): void {
+		for (const watcher of this.watchers) {
+			try {
+				watcher(use);
+			} catch {
+				// A dashboard listener must not break the model request.
+			}
+		}
+	}
+
 	/** `models` with its two request paths throttled; everything else passes through. */
 	wrap(models: Models): Models {
 		const throttle = this;
@@ -199,15 +219,38 @@ export class Throttle {
 					out.end();
 					return;
 				}
+				const sent = throttle.now();
+				// The first token: text, thinking or the start of a tool call. What the user waits to see.
+				let first: number | null = null;
+				let settled = false;
+				const use = (usage: Usage | undefined, done: number) => throttle.notify({
+					at: done, provider: model.provider, model: model.id, ...(options?.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+					ttftMs: first === null ? null : first - sent,
+					input: usage?.input ?? 0, output: usage?.output ?? 0, tokens: usage?.totalTokens ?? 0, cost: usage?.cost.total ?? 0,
+				});
 				try {
 					const inner = models.streamSimple(model, context, options);
-					for await (const event of inner) out.push(event);
+					for await (const event of inner) {
+						if (first === null && (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_start")) first = throttle.now();
+						// The final event ends the outer stream: count the use before it goes out.
+						if (!settled && (event.type === "done" || event.type === "error")) {
+							const usage = event.type === "done" ? event.message.usage : event.error.usage;
+							throttle.record(slot, usage);
+							use(usage, throttle.now());
+							settled = true;
+						}
+						out.push(event);
+					}
 					const message = await inner.result();
-					throttle.record(slot, message.usage);
+					if (!settled) {
+						throttle.record(slot, message.usage);
+						use(message.usage, throttle.now());
+					}
 					out.end(message);
 				} catch (error) {
 					// Providers report failures as events; this is only a safety net so the turn always ends.
 					out.push({ type: "error", reason: "error", error: failed(model, "error", error) });
+					if (!settled) use(undefined, throttle.now());
 					out.end();
 				}
 			})();
@@ -217,6 +260,11 @@ export class Throttle {
 			const slot = await throttle.admit(model.provider, options?.sessionId, options?.signal);
 			const message = await models.completeSimple(model, context, options);
 			throttle.record(slot, message.usage);
+			throttle.notify({
+				at: throttle.now(), provider: model.provider, model: model.id, ...(options?.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+				ttftMs: null,
+				input: message.usage.input, output: message.usage.output, tokens: message.usage.totalTokens, cost: message.usage.cost.total,
+			});
 			return message;
 		};
 		return new Proxy(models, {
