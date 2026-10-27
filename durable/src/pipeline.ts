@@ -32,7 +32,7 @@ import {
 import { backendCache, type BackendPr, backendsDir, backendTree, commitsAhead, plannedRepos, prepareBackend, pushBackend, uncommitted } from "./backends.ts";
 import type { Config } from "./config.ts";
 import { addEvent, type Revision, StepDoc, type StepRecord, type StepUsage, type Ticket, TicketDoc, type TicketEvent, TicketIndex } from "./docs.ts";
-import { type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
+import { containerName, type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
 import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, run, testsKept, writeGuardHooks } from "./git.ts";
 import { indexScope, loadIndexOptions } from "./index/options.ts";
 import { scheduleIndexUpdate } from "./index/sync.ts";
@@ -41,7 +41,7 @@ import { formatUnneeded, keptOnPurpose, notInPlan, unneededFiles } from "./scope
 import { formatFindings, redact, scanBranch } from "./secrets.ts";
 import type { GitHost, InlineComment } from "./github.ts";
 import { askJev, describe, startIndex } from "./jev.ts";
-import { family, type Lanes, modelName, pickModel, plannedModels, withOverrides } from "./lanes.ts";
+import { family, type Lanes, modelName, parseModel, pickModel, plannedModels, withOverrides } from "./lanes.ts";
 import { buildPrompt, hasRole, STEP_EXTENSIONS } from "./roles.ts";
 import { steFaults, steRoles } from "./ste.ts";
 import { TicketGone, type Tracker } from "./tracker.ts";
@@ -310,7 +310,7 @@ export function createPipeline(deps: PipelineDeps) {
 		(await runtime.snapshot(TicketDoc, task.input.ticketId, context)) as Ticket;
 	const paths = (ticket: Ticket) => ({ run: ticket.run!, worktree: ticket.worktree!, branch: ticket.branch! });
 	const log = (ticket: Ticket, line: string) => deps.log(`${ticket.cid} ${line}`);
-	const container = (ticket: Ticket) => (config.sandbox === "docker" ? `factory-${ticket.cid.toLowerCase().replace(/[^a-z0-9]/g, "-")}` : null);
+	const container = (ticket: Ticket) => containerName(config, ticket.cid);
 	const cell = (ticket: Ticket) =>
 		cellEnv({ cid: ticket.cid, slot: ticket.slot ?? 0, hooksDir: join(ticket.run!, "git-hooks"), portStart: config.cellPortStart, portSpan: config.cellPortSpan, identity: deps.identity });
 
@@ -512,7 +512,7 @@ export function createPipeline(deps: PipelineDeps) {
 		const earlier = ticket.steps.filter((s) => s.role === role && s.round === round);
 		const attempt = earlier.length + 1;
 		const coder = ticket.steps.findLast((s) => s.role === "code" && s.status === "done");
-		const avoid = (role === "review" || role === "judge") && coder ? family(parseRef(coder.model)) : null;
+		const avoid = (role === "review" || role === "judge") && coder ? family(parseModel(coder.model)!) : null;
 		// A model that failed this step in this run is skipped; a later run tries it again.
 		const failed = new Set(earlier.filter((s) => s.status === "failed" && s.taskId === task.id).map((s) => s.model));
 		const skip = (m: ModelRef) => (failed.has(modelName(m)) ? "failed earlier in this step" : null);
@@ -1470,11 +1470,6 @@ async function freeBranch(repo: string, name: string, ranBefore: boolean): Promi
 	}
 	throw new Blocked(`no free branch name for ${name}`);
 }
-
-const parseRef = (name: string): ModelRef => {
-	const slash = name.indexOf("/");
-	return { provider: name.slice(0, slash), modelId: name.slice(slash + 1) };
-};
 
 export const _test = { lastLine, initial };
 export { git };

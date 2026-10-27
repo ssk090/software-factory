@@ -7,8 +7,12 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv, ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import type { Config } from "./config.ts";
 import { run } from "./git.ts";
 import { indexScope } from "./index/options.ts";
+
+/** The ticket's sandbox container (SANDBOX=docker), or null. */
+export const containerName = (config: Pick<Config, "sandbox">, cid: string) => (config.sandbox === "docker" ? `factory-${cid.toLowerCase().replace(/[^a-z0-9]/g, "-")}` : null);
 
 /** Names of variables an agent's shell never gets. */
 export const SECRET = /(TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIALS)/i;
