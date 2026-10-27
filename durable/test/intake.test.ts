@@ -111,6 +111,27 @@ describe("tracker refs", () => {
 		assert.equal(await new ClickUp(loadConfig({ CLICKUP_TOKEN: "x" })).resolve("https://app.clickup.com/t/86bckpd3m"), "86bckpd3m");
 	});
 
+	it("fetches every page of ClickUp comments, not only the newest", async () => {
+		const { ClickUp } = await import("../src/tracker.ts");
+		const all = Array.from({ length: 30 }, (_, i) => ({ id: `c${i}`, date: String(1000 + i), user: { username: "me" }, comment_text: `note ${i}` }));
+		const calls: string[] = [];
+		const fake = (async (method: string, url: string) => {
+			calls.push(`${method} ${url}`);
+			if (url.includes("/comment")) {
+				const startId = new URL(url).searchParams.get("start_id");
+				const from = startId === null ? 0 : Number(startId.slice(1)) + 1;
+				return { data: { comments: all.slice(from, from + 25) }, headers: new Headers() };
+			}
+			return { data: { id: "86b", name: "t", url: "https://x/t", status: { status: "to do" }, markdown_description: "d" }, headers: new Headers() };
+		}) as unknown as typeof import("../src/http.ts").requestJson;
+		const got = await new ClickUp(loadConfig({ CLICKUP_TOKEN: "x" }), fake).fetch("86b");
+		assert.match(got.comments, /note 0/, "the oldest page is there");
+		assert.match(got.comments, /note 29/, "and the newest");
+		const pages = calls.filter((c) => c.includes("/comment"));
+		assert.equal(pages.length, 2, "a short page ends the loop");
+		assert.match(pages[1]!, /\?start=1024&start_id=c24$/, "the second page starts after the first page's last comment");
+	});
+
 	it("uploads an attachment as multipart, field attachment, with the file's name", async () => {
 		const { ClickUp } = await import("../src/tracker.ts");
 		const real = globalThis.fetch;

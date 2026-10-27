@@ -59,16 +59,43 @@ export class TicketGone extends Error {
 	}
 }
 
+type Comment = { id: string; date?: string | number; user?: { username?: string }; comment_text: string };
+/** Comments per page: ClickUp returns 25, and a shorter page is the last one. */
+const COMMENT_PAGE = 25;
+
 export class ClickUp implements Tracker {
 	private readonly config: Config;
-	constructor(config: Config) {
+	private readonly request: typeof requestJson;
+	constructor(config: Config, request: typeof requestJson = requestJson) {
 		this.config = config;
+		this.request = request;
 	}
 
 	private async api<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const { token } = this.config.clickup;
 		if (!token) throw new Error("CLICKUP_TOKEN is not set (ff login CLICKUP_TOKEN)");
-		return (await requestJson<T>(method, `${API}${path}`, { headers: { Authorization: token }, body, timeoutMs: 60_000 })).data;
+		return (await this.request<T>(method, `${API}${path}`, { headers: { Authorization: token }, body, timeoutMs: 60_000 })).data;
+	}
+
+	/** Every comment, page after page: ClickUp returns 25 at a time (start and start_id continue). */
+	private async comments(id: string): Promise<Comment[]> {
+		const byId = new Map<string, Comment>();
+		let start = "";
+		let startId = "";
+		for (let page = 0; page < 100; page++) {
+			const query = new URLSearchParams();
+			if (start !== "") query.set("start", start);
+			if (startId !== "") query.set("start_id", startId);
+			const data = await this.api<{ comments?: Comment[] }>("GET", `/task/${encodeURIComponent(id)}/comment${query.size === 0 ? "" : `?${query}`}`);
+			const batch = data.comments ?? [];
+			for (const c of batch) byId.set(c.id, c);
+			const last = batch.at(-1);
+			// A short page is the last one. An id that did not move means the endpoint ignored the paging.
+			if (batch.length < COMMENT_PAGE || last === undefined || last.id === startId) break;
+			startId = last.id;
+			start = last.date === undefined ? "" : String(last.date);
+		}
+		return [...byId.values()];
 	}
 
 	async info(id: string): Promise<TicketInfo> {
@@ -90,10 +117,10 @@ export class ClickUp implements Tracker {
 
 	async fetch(id: string) {
 		const t = await this.info(id);
-		const comments = await this.api<{ comments: { user?: { username?: string }; comment_text: string }[] }>("GET", `/task/${encodeURIComponent(id)}/comment`);
+		const comments = await this.comments(id);
 		return {
 			ticket: `# ${t.cid}: ${t.title}\n\nURL: ${t.url}\n\n${t.description}\n`,
-			comments: comments.comments.map((c) => `[${c.user?.username ?? "?"}] ${c.comment_text}\n`).join("\n"),
+			comments: comments.map((c) => `[${c.user?.username ?? "?"}] ${c.comment_text}\n`).join("\n"),
 		};
 	}
 
