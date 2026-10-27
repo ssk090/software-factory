@@ -264,11 +264,20 @@ export function cellEnv(options: { cid: string; slot: number; hooksDir: string; 
 	};
 }
 
-/** The spec tests: files the test writer added or changed, frozen by content hash. */
-export async function freezeTests(worktree: string, base: string): Promise<Record<string, string>> {
-	const files = (await gitOk(worktree, "diff", "--name-only", "--diff-filter=d", `refs/remotes/origin/${base}...HEAD`)).split("\n").filter(Boolean);
+/** A test file by its path: `*.test.ts`, `*.spec.js`, `test/...`, `__tests__/...`, `_test.go`, `FooTest.java`. */
+const TEST_FILE = /(?:^|\/)(?:__tests__|tests?|spec)\/|\.(?:test|spec)(?:\.[^/]+)?$|_test\.(?:go|py|rb)$|(?:Test|Tests|IT)\.java$/;
+
+/**
+ * The spec tests: the test files the branch adds or changes, frozen by content hash. A config or a
+ * helper the test writer changed is not a test file, so the coder may still change it. When plan.md
+ * names some of the changed test files, only those are frozen.
+ */
+export async function freezeTests(worktree: string, base: string, plan = ""): Promise<Record<string, string>> {
+	const changed = (await gitOk(worktree, "diff", "--name-only", "--diff-filter=d", `refs/remotes/origin/${base}...HEAD`)).split("\n").filter(Boolean);
+	const tests = changed.filter((file) => TEST_FILE.test(file));
+	const named = tests.filter((file) => plan.includes(file));
 	const frozen: Record<string, string> = {};
-	for (const file of files) frozen[file] = await gitOk(worktree, "hash-object", file);
+	for (const file of named.length > 0 ? named : tests) frozen[file] = await gitOk(worktree, "hash-object", file);
 	return frozen;
 }
 

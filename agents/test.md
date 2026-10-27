@@ -14,6 +14,7 @@ Rules:
 - Only add or change test files (and test fixtures). Do not change production code.
 - Stay on the current branch. Never push.
 - Do not spawn subagents, background workers, parallel agent tasks, or any interactive helper. Do the work in this single headless process.
+- The factory runs plan.md's TEST_CMD after your step. It must fail (red). Commit every test file: the factory stops the run when the worktree holds uncommitted changes.
 
 Do this:
 1. For each acceptance criterion in spec.md, write the test(s) planned in plan.md.

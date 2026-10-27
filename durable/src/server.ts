@@ -342,7 +342,7 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 		const ticket = await factory.ticket(ticketId);
 		if (ticket === undefined) return null;
 		const files: Record<string, string | null> = {};
-		const logs = ["route.log", "guard.log", "skills.log", "setup.log", ...ticket.verify.map((v) => v.log), "pre-push.log"];
+		const logs = ["route.log", "guard.log", "skills.log", "setup.log", "test-red.log", ...ticket.verify.map((v) => v.log), "pre-push.log"];
 		for (const name of ["spec.md", "plan.md", "tests.md", "blocked.md", "verify-failed.md", "judge.txt", ...new Set([...ticket.reviews.map((r) => r.file), ...(ticket.steps ?? []).filter((s) => s.role === "review").map((s) => `review-${s.round}.md`)]), ...logs]) files[name] = await runFile(ticket, name);
 		// A running step's usage so far (an ended step carries its own).
 		const steps = await Promise.all((ticket.steps ?? []).map(async (s) => (s.usage == null ? { ...s, usage: await factory.stepUsage(s.conversationId) } : s)));

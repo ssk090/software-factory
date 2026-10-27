@@ -228,7 +228,7 @@ const SETUP_PHASES = new Set<Phase>(["start", "admit", "fetch", "models", "workt
 /** Everything a fresh run removes from the run folder. */
 const RUN_OUTPUTS = [
 	"spec.md", "plan.md", "tests.md", "test-changes.md", "blocked.md", "docs.md", "fix-notes.md", "pr-title.txt",
-	"pr-body.md", "judge.json", "judge.txt", "verify-failed.md", "guard.log", "runtime.md",
+	"pr-body.md", "judge.json", "judge.txt", "verify-failed.md", "guard.log", "runtime.md", "test-red.log",
 ];
 
 export function createPipeline(deps: PipelineDeps) {
@@ -823,6 +823,11 @@ export function createPipeline(deps: PipelineDeps) {
 	const UI_FILES = /\.(?:tsx|jsx|css|scss|sass|less|html)$/i;
 	const touchesUi = async (worktree: string) =>
 		(await gitOk(worktree, "diff", "--name-only", `origin/${config.base}...HEAD`)).split("\n").some((file) => UI_FILES.test(file));
+	/** Files changed in the worktree that are not committed: a step that must leave a clean tree finds them here. */
+	const dirtyFiles = async (worktree: string) =>
+		(await gitOk(worktree, "status", "--porcelain")).split("\n").map((l) => l.trim()).filter((l) => l !== "");
+	/** plan.md's machine-readable test command (`TEST_CMD: <command>`), or "". */
+	const planTestCmd = (plan: string) => (/^\s*TEST_CMD:\s*(.+)$/im.exec(plan)?.[1] ?? "").trim().replace(/^`|`$/g, "");
 	const onBranch = async (ticket: Ticket, label: string) => {
 		if ((await currentBranch(ticket.worktree!)) !== ticket.branch) throw new Blocked(`${label} left branch ${ticket.branch}`);
 	};
@@ -1106,7 +1111,22 @@ export function createPipeline(deps: PipelineDeps) {
 			const ticket = await ticketOf(task, runtime, context);
 			if ((await readText(join(ticket.run!, "tests.md"))).trim() === "") throw new Blocked("test writer wrote no tests.md");
 			await onBranch(ticket, "test writer");
-			const frozen = await freezeTests(ticket.worktree!, config.base);
+			// An uncommitted test is not frozen, and the coder sees it as its own work.
+			const dirty = await dirtyFiles(ticket.worktree!);
+			if (dirty.length > 0) throw new Blocked(`test writer left changes that are not committed: ${dirty.slice(0, 10).join(", ")}`);
+			const plan = await readText(join(ticket.run!, "plan.md"));
+			// The new tests must be red: a test that already passes proves nothing about the spec.
+			const command = planTestCmd(plan);
+			if (command === "") {
+				await note(runtime, context, ticket.id, { kind: "test", level: "warn", text: "plan.md has no TEST_CMD line: the factory cannot check that the new tests are red" });
+			} else {
+				const code = await exec(ticket, command, "test-red.log", context);
+				if (code === 126 || code === 127) throw new Blocked(`TEST_CMD did not run (exit ${code}), see test-red.log`);
+				if (code === 0) throw new Blocked("TEST_CMD passed before the spec was implemented (test-red.log): the new tests do not prove the spec");
+				await note(runtime, context, ticket.id, { kind: "test", text: "TEST_CMD fails as it should before the code (test-red.log)" });
+			}
+			// Only the test files are frozen: a config or a helper the test writer changed stays free for the coder.
+			const frozen = await freezeTests(ticket.worktree!, config.base, plan);
 			await writeFile(join(ticket.run!, "test-files.sha256"), Object.entries(frozen).map(([f, h]) => `${h} ${f}\n`).join(""));
 			await advance(task, runtime, context, { phase: "code", step: null, round: 1, frozen });
 		},
