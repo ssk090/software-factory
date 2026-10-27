@@ -207,6 +207,11 @@
   /* Ticket detail: controls, Tabs (segmented), the timeline, the log */
   .notice { margin-bottom: 12px; padding: 8px 12px; border: 1px solid color-mix(in oklch, var(--warning) 40%, transparent); border-radius: var(--radius-md); background: color-mix(in oklch, var(--warning) 10%, transparent); font-size: 13px; }
   .summary { font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  .onb-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+  .onb-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin: 10px 0; }
+  .onb-field > span { color: var(--muted-foreground); }
+  .onb-field input, .onb-field textarea { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: inherit; }
+  .onb-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
   .seg { display: inline-flex; gap: 2px; margin: 12px 0; padding: 3px; border-radius: var(--radius-lg); background: var(--muted); }
   .seg button { padding: 4px 12px; border: 0; border-radius: var(--radius-md); background: none; color: var(--muted-foreground); font: inherit; font-size: 13px; cursor: pointer; transition: background-color 0.15s, color 0.15s, box-shadow 0.15s; }
   .seg button.on { background: var(--background); color: var(--foreground); box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
@@ -514,6 +519,7 @@
       <button data-tab="perf" title="Performance"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span class="label">Performance</span><span id="n-perf" class="count muted"></span></button>
       <button data-tab="quality" title="Quality"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 12 3 3 6-6"/></svg><span class="label">Quality</span><span id="n-quality" class="count muted"></span></button>
       <button data-tab="settings" title="Settings"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg><span class="label">Settings</span></button>
+      <button data-tab="onboarding" title="Onboarding"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20"/><path d="m8 6 4-4 4 4"/><path d="m8 18 4 4 4-4"/></svg><span class="label">Onboarding</span></button>
     </nav>
     <div class="sidebar-foot">
       <div class="meter" id="meter" title="Model spend today, across every API key">
@@ -568,6 +574,12 @@
       <div id="settings-note" class="muted"></div>
       <table><thead><tr><th>Agent</th><th>Model (first choice)</th><th>Fallbacks</th><th></th></tr></thead><tbody id="settings-rows"></tbody></table>
     </section>
+    <div id="tab-onboarding" hidden>
+      <div class="bar"><h2>Onboarding</h2><span class="grow"></span><span id="onb-note" class="muted"></span></div>
+      <div class="banner" id="onb-banner" role="alert" hidden><span id="onb-banner-text"></span></div>
+      <nav class="onb-steps" id="onb-steps" aria-label="Onboarding steps"></nav>
+      <div id="onb-body"></div>
+    </div>
     <div id="tab-perf" hidden>
       <div class="bar"><h2>Performance</h2><span class="chip" id="perf-health">idle</span><span class="grow"></span><span id="perf-note" class="muted"></span>
         <label class="muted" for="perf-every">Refresh</label>
@@ -697,11 +709,12 @@ let tab = "sentry";
 for (const b of document.querySelectorAll("#tabs button")) b.addEventListener("click", () => {
   tab = b.dataset.tab;
   for (const x of document.querySelectorAll("#tabs button")) x.classList.toggle("on", x === b);
-  for (const name of ["sentry", "sprint", "runs", "perf", "quality", "settings"]) $(`tab-${name}`).hidden = name !== tab;
+  for (const name of ["sentry", "sprint", "runs", "perf", "quality", "settings", "onboarding"]) $(`tab-${name}`).hidden = name !== tab;
   replay($(`tab-${tab}`), "view-in");
   if (tab === "sprint") loadSprint(false);
   if (tab === "perf") loadPerf();
   if (tab === "quality") loadQuality();
+  if (tab === "onboarding") loadOnboarding();
   if (tab === "settings") loadSettings();
 });
 
@@ -865,6 +878,237 @@ function removeTicket(button, t) {
   });
 }
 $("run-start").addEventListener("click", (e) => act(e.target, async () => { const ref = $("run-ref").value.trim(); if (!ref) throw new Error("enter a ticket"); const r = await api(`/api/tickets/${encodeURIComponent(ref)}/start`, { gate: true, autoApprove, pickModels }); openTicket(r.ticketId); }));
+
+// ---- Onboarding: tracker, Sentry, repo, keys, agents and a dry-run check, without a file edit ----
+let onb = null, onbStep = 0, onbAgent = null;
+const ONB_STEPS = [
+  { key: "clickup", label: "Tracker" },
+  { key: "sentry", label: "Sentry" },
+  { key: "repo", label: "Repo" },
+  { key: "models", label: "Model keys" },
+  { key: "agents", label: "Agents" },
+  { key: "check", label: "Dry-run check" },
+];
+async function loadOnboarding() {
+  try {
+    onb = await api("/api/setup");
+    try { await getLanes(true); } catch { /* the model lane is optional here */ }
+    drawOnboarding();
+  } catch (e) {
+    $("onb-note").textContent = e.message;
+    $("onb-note").className = "error";
+  }
+}
+function onbCard(title, ...kids) {
+  return el("section", { class: "card" }, el("div", { class: "bar" }, el("h2", {}, title)), ...kids);
+}
+function onbField(key) {
+  const input = el("input", {
+    type: key.secret ? "password" : "text",
+    value: key.secret ? "" : key.value,
+    "data-key": key.name,
+    autocomplete: "off",
+    placeholder: key.secret ? (key.set ? `set (${key.hint}); type a new value to replace it` : "not set") : "",
+  });
+  return el("label", { class: "onb-field" },
+    el("span", {}, key.label),
+    input,
+    key.secret && key.set ? el("button", { class: "act sm", type: "button", onclick: (e) => onbClear(e.target, key.name) }, "Clear") : null);
+}
+async function onbClear(button, name) {
+  button.disabled = true;
+  try {
+    const r = await api("/api/setup", { clear: [name] });
+    onb = r.view;
+    flash(`${name} cleared`);
+    drawOnboarding();
+  } catch (e) { flash(e.message, true); }
+  finally { button.disabled = false; }
+}
+function onbValues() {
+  const values = {};
+  for (const input of document.querySelectorAll("#onb-body input[data-key]")) {
+    const key = onb.keys.find((k) => k.name === input.dataset.key);
+    if (!key) continue;
+    if (key.secret && input.value === "") continue;
+    if (!key.secret && input.value === key.value) continue;
+    values[key.name] = input.value;
+  }
+  return values;
+}
+async function onbSave(button) {
+  const values = onbValues();
+  if (Object.keys(values).length === 0) { flash("No change to save"); return; }
+  button.disabled = true;
+  try {
+    const r = await api("/api/setup", { values });
+    onb = r.view;
+    if (r.restart.length > 0) {
+      $("onb-banner").hidden = false;
+      $("onb-banner-text").textContent = "Saved. Restart ff serve to use the new repo, tracker or Sentry settings. A model key also needs a restart. Agent files apply to the next step.";
+    }
+    flash("Saved");
+    drawOnboarding();
+  } catch (e) { flash(e.message, true); }
+  finally { button.disabled = false; }
+}
+async function onbTest(button, kind, out) {
+  button.disabled = true;
+  out.textContent = "Testing...";
+  out.className = "muted";
+  try {
+    const r = await api("/api/setup/test", { kind });
+    out.textContent = `${r.ok ? "OK" : "FAIL"}: ${r.detail}`;
+    out.className = r.ok ? "muted" : "error";
+  } catch (e) {
+    out.textContent = e.message;
+    out.className = "error";
+  } finally { button.disabled = false; }
+}
+function onbTestRow(kind, label) {
+  const out = el("span", { class: "muted onb-test-out" }, "");
+  return el("div", { class: "onb-row" },
+    el("button", { class: "act sm", type: "button", onclick: (e) => onbTest(e.target, kind, out) }, `Test ${label}`),
+    out);
+}
+function onbSaveRow() {
+  return el("div", { class: "bar" }, el("span", { class: "grow" }),
+    el("button", { class: "act primary", type: "button", onclick: (e) => onbSave(e.target) }, "Save this step"));
+}
+function onbGroup(group) {
+  return onb.keys.filter((k) => k.group === group).map(onbField);
+}
+function onbAgents(body) {
+  if (onb === null) return;
+  const roles = onb.agents.map((a) => a.role);
+  if (!onbAgent || !roles.includes(onbAgent)) onbAgent = (onb.agents.find((a) => a.runs) ?? onb.agents[0])?.role ?? "code";
+  const current = onb.agents.find((a) => a.role === onbAgent);
+  const pick = el("select", { "aria-label": "Edit an agent", onchange: (e) => { onbAgent = e.target.value; drawOnboarding(); } },
+    ...roles.map((r) => el("option", { value: r, selected: r === onbAgent }, `${r}${onb.agents.find((x) => x.role === r)?.runs ? " (runs)" : ""}`)));
+  const role = el("input", { type: "text", id: "onb-agent-role", value: onbAgent, list: "onb-agent-roles", autocomplete: "off" });
+  const datalist = el("datalist", { id: "onb-agent-roles" }, ...roles.map((r) => el("option", { value: r })));
+  const prompt = el("textarea", { id: "onb-agent-prompt", rows: 10, spellcheck: "false" }, current?.prompt ?? "");
+  const skills = el("input", { type: "text", id: "onb-agent-skills", value: current?.skills ?? "", autocomplete: "off" });
+  const from = el("select", { "aria-label": "Start from an agent" }, ...roles.map((r) => el("option", { value: r }, r)));
+  const load = () => {
+    const src = onb.agents.find((a) => a.role === from.value);
+    if (!src) return;
+    role.value = "";
+    prompt.value = src.prompt;
+    skills.value = src.skills;
+  };
+  const save = el("button", { class: "act primary", type: "button" }, "Save agent");
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    try {
+      const r = await api("/api/agents", { role: role.value.trim(), prompt: prompt.value, skills: skills.value });
+      onb.agents = r.agents;
+      onbAgent = role.value.trim();
+      flash("Agent saved. The next step uses it.");
+      drawOnboarding();
+    } catch (e) { flash(e.message, true); }
+    finally { save.disabled = false; }
+  });
+  const toggle = current ? el("button", { class: "act sm", type: "button" }, current.enabled ? "Disable" : "Enable") : null;
+  if (toggle) toggle.addEventListener("click", async () => {
+    toggle.disabled = true;
+    try {
+      const r = await api("/api/agents", { role: current.role, enabled: !current.enabled });
+      onb.agents = r.agents;
+      drawOnboarding();
+    } catch (e) { flash(e.message, true); }
+    finally { toggle.disabled = false; }
+  });
+  const laneBox = el("div", {}, el("p", { class: "muted" }, "Loading the model lane..."));
+  getLanes(false).then((d) => {
+    const chain = laneOf(d, onbAgent);
+    laneBox.replaceChildren(
+      el("label", { class: "onb-field" }, el("span", {}, "Model (first choice)"),
+        modelSelect(chain[0], `Model for ${onbAgent}`, async (model) => {
+          try {
+            lanesData = await api("/api/lanes", { role: onbAgent, model });
+            flash(`${onbAgent} now starts on ${model}`);
+            drawOnboarding();
+          } catch (e) { flash(e.message, true); }
+        })),
+      el("p", { class: "muted" }, `Fallbacks: ${chain.slice(1).join(", ") || "none"}`));
+  }).catch((e) => laneBox.replaceChildren(el("div", { class: "error" }, e.message)));
+  const remove = current && !current.builtin ? el("button", { class: "act sm", type: "button" }, "Remove") : null;
+  if (remove) remove.addEventListener("click", async () => {
+    remove.disabled = true;
+    try {
+      const r = await api("/api/agents", { role: current.role, remove: true });
+      onb.agents = r.agents;
+      onbAgent = null;
+      drawOnboarding();
+    } catch (e) { flash(e.message, true); }
+    finally { remove.disabled = false; }
+  });
+  body.append(onbCard("Agents",
+    el("p", { class: "muted" }, "Edit the prompt and skills of an agent. A pipeline role runs at its phase. A custom role is stored, but the pipeline does not call it."),
+    el("label", { class: "onb-field" }, el("span", {}, "Edit"), pick),
+    el("label", { class: "onb-field" }, el("span", {}, "Role"), role, datalist),
+    el("label", { class: "onb-field" }, el("span", {}, "Prompt"), prompt),
+    el("label", { class: "onb-field" }, el("span", {}, "Skills (comma-separated)"), skills),
+    el("div", { class: "onb-row" },
+      el("label", { class: "onb-field" }, el("span", {}, "Start from"), from),
+      el("button", { class: "act sm", type: "button", onclick: load }, "Load"),
+      el("span", { class: "grow" }),
+      save, toggle, remove),
+    laneBox,
+    current ? el("p", { class: "muted" }, `Model lane: ${current.lane.join(" -> ") || "none"}${current.runs ? "" : " (this role does not run)"}`) : null));
+}
+function drawOnboarding() {
+  if (onb === null) return;
+  $("onb-note").textContent = `Settings file: ${onb.file}`;
+  $("onb-note").className = "muted";
+  if (onb.firstRun) {
+    $("onb-banner").hidden = false;
+    $("onb-banner-text").textContent = "This factory has no repo in config.env yet. Start at step 1, then restart ff serve.";
+  }
+  $("onb-steps").replaceChildren(...ONB_STEPS.map((s, i) =>
+    el("button", { class: `act sm ${i === onbStep ? "primary" : ""}`, type: "button", onclick: () => { onbStep = i; drawOnboarding(); } }, `${i + 1}. ${s.label}`)));
+  const body = $("onb-body");
+  body.replaceChildren();
+  const step = ONB_STEPS[onbStep].key;
+  if (step === "clickup") {
+    body.append(onbCard("Connect ClickUp",
+      el("p", { class: "muted" }, "The token, list and status names the factory uses. The token goes to config.env with mode 600. The page never reads it back."),
+      ...onbGroup("clickup"),
+      onbTestRow("clickup", "ClickUp"),
+      onbSaveRow()));
+  } else if (step === "sentry") {
+    body.append(onbCard("Connect Sentry (optional)",
+      el("p", { class: "muted" }, "Skipping Sentry is fine: the factory then shows no production issues."),
+      ...onbGroup("sentry"),
+      onbTestRow("sentry", "Sentry"),
+      onbSaveRow()));
+  } else if (step === "repo") {
+    body.append(onbCard("The repo",
+      el("p", { class: "muted" }, "A local checkout and its base branch. SETUP_CMD runs in each new worktree, VERIFY_CMD after the coder and the fixes."),
+      ...onbGroup("repo"),
+      onbTestRow("repo", "repo"),
+      onbTestRow("verify", "VERIFY_CMD"),
+      onbTestRow("github", "GitHub"),
+      onbSaveRow()));
+  } else if (step === "models") {
+    body.append(onbCard("Model provider keys",
+      el("p", { class: "muted" }, "One key for each provider you use. The factory skips a model without a login."),
+      ...onbGroup("models"),
+      onbTestRow("models", "providers"),
+      onbSaveRow()));
+  } else if (step === "agents") {
+    onbAgents(body);
+  } else {
+    body.append(onbCard("Dry-run check",
+      el("p", { class: "muted" }, "The same checks as ff doctor. A save does not start a pipeline. Restart ff serve after a repo or tracker change, then start a ticket on the Factory runs page."),
+      ...["clickup", "sentry", "github", "repo", "verify", "models"].map((kind) => onbTestRow(kind, kind))));
+  }
+  body.append(el("div", { class: "bar" },
+    el("button", { class: "act sm", type: "button", disabled: onbStep === 0, onclick: () => { onbStep = Math.max(0, onbStep - 1); drawOnboarding(); } }, "Back"),
+    el("span", { class: "grow" }),
+    el("button", { class: "act sm primary", type: "button", disabled: onbStep === ONB_STEPS.length - 1, onclick: () => { onbStep = Math.min(ONB_STEPS.length - 1, onbStep + 1); drawOnboarding(); } }, "Next")));
+}
 
 // ---- Quality: judge scores, criteria, review rounds, repairs, checks, cost and time ----
 const qualityDur = (ms) => ms >= 3_600_000 ? `${(ms / 3_600_000).toFixed(1)} h` : ms >= 60_000 ? `${(ms / 60_000).toFixed(1)} min` : `${Math.round(ms / 1000)} s`;

@@ -1,6 +1,6 @@
 // The dashboard server: who may call it, and what the API does.
 import assert from "node:assert/strict";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -18,7 +18,7 @@ describe("server", { timeout: 60_000 }, () => {
 	before(async () => {
 		const w = await scratchRepo();
 		root = w.root;
-		const config = testConfig(w.repo, w.data, { DASH_PORT: "0" });
+		const config = testConfig(w.repo, w.data, { DASH_PORT: "0", FACTORY_CONFIG: join(root, "config.env") });
 		const { models } = fauxAgents({ coderSleep: 3 });
 		factory = await Factory.open({ config, models, lanes: structuredClone(lanes), tracker: new FakeTracker(), gitHost: new FakeGitHost(), sentry: null, log: () => {}, gatePollMs: 50, admitPollMs: 50 });
 		const started = await startServer(factory, { dashboardFile: join(here, "durable", "dashboard", "index.html"), tokenFile: join(w.data, "state", "dash.token") });
@@ -43,6 +43,29 @@ describe("server", { timeout: 60_000 }, () => {
 		assert.ok(page.includes(`const TOKEN = "${token}"`));
 		const file = await readFile(join(root, "data", "state", "dash.token"), "utf8");
 		assert.equal(file, token);
+	});
+
+	it("onboarding: reads the setup, saves a key masked, and tests the repo", async () => {
+		const view = await (await fetch(`${url}/api/setup`)).json();
+		assert.equal(view.loopback, true);
+		assert.ok(Array.isArray(view.keys));
+		const keyValue = "ck_secret_5678";
+		const saved = await (await post("/api/setup", { values: { CLICKUP_TOKEN: keyValue, BASE: "main" } })).json();
+		assert.deepEqual(saved.saved.sort(), ["BASE", "CLICKUP_TOKEN"]);
+		assert.ok(!JSON.stringify(saved).includes(keyValue), "the response never holds the key");
+		const after = await (await fetch(`${url}/api/setup`)).json();
+		const key = after.keys.find((k: { name: string }) => k.name === "CLICKUP_TOKEN");
+		assert.equal(key.set, true);
+		assert.equal(key.value, "");
+		assert.equal(key.hint, "****5678");
+		assert.ok(!JSON.stringify(after).includes(keyValue), "no endpoint returns the key");
+		const file = await readFile(join(root, "config.env"), "utf8");
+		assert.match(file, /CLICKUP_TOKEN='ck_secret_5678'/);
+		assert.equal((await stat(join(root, "config.env"))).mode & 0o777, 0o600);
+		const test = await (await post("/api/setup/test", { kind: "repo" })).json();
+		assert.equal(test.ok, true, test.detail);
+		assert.equal((await post("/api/setup", { values: { NOPE: "x" } })).status, 400);
+		delete process.env.CLICKUP_TOKEN;
 	});
 
 	it("refuses an unknown Host (DNS rebinding) and a POST without the token (cross-site)", async () => {

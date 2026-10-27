@@ -18,6 +18,7 @@ import { git } from "./git.ts";
 import { Metrics } from "./metrics.ts";
 import { PHASES } from "./pipeline.ts";
 import { score } from "./sentry.ts";
+import { type ConnectionKind, removeAgent, saveAgent, saveSetup, setAgentEnabled, setupView, testConnection } from "./setup.ts";
 
 const context = BACKGROUND_CONTEXT;
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -193,6 +194,38 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 		const [, area, key, action] = parts;
 
 		if (method === "GET" && area === "overview") return json(res, 200, await overview());
+		// Onboarding: the setup and its checks. Secrets leave as a mask only.
+		if (area === "setup" && method === "GET") return json(res, 200, await setupView(factory.deps.config));
+		if (area === "setup" && key === "test" && method === "POST") {
+			const input = await body(req);
+			const kind = str(input.kind, "kind", 20) as ConnectionKind;
+			if (!["clickup", "sentry", "github", "repo", "verify", "models"].includes(kind)) throw new HttpFail(400, "unknown check");
+			return json(res, 200, await testConnection(factory.deps.config, kind));
+		}
+		if (area === "setup" && method === "POST") {
+			// A non-local dashboard already needs DASH_PASSWORD to start. Refuse secrets without it anyway.
+			if (!loopback && dash.password === "") throw new HttpFail(409, "set DASH_PASSWORD before you save secrets on a non-local dashboard");
+			const input = await body(req);
+			const bad = (e: unknown) => {
+				throw new HttpFail(400, e instanceof Error ? e.message : String(e));
+			};
+			const result = await saveSetup(factory.deps.config, {
+				values: input.values !== null && typeof input.values === "object" ? (input.values as Record<string, unknown>) : undefined,
+				clear: Array.isArray(input.clear) ? input.clear : [],
+			}).catch(bad);
+			return json(res, 200, { ...result, view: await setupView(factory.deps.config) });
+		}
+		if (area === "agents" && method === "POST") {
+			const input = await body(req);
+			const role = str(input.role, "role", 40);
+			const bad = (e: unknown) => {
+				throw new HttpFail(400, e instanceof Error ? e.message : String(e));
+			};
+			if (input.remove === true) await removeAgent(factory.deps.config, role).catch(bad);
+			else if (typeof input.enabled === "boolean") await setAgentEnabled(factory.deps.config, role, input.enabled).catch(bad);
+			else await saveAgent(factory.deps.config, { role, prompt: input.prompt, skills: input.skills, cloneFrom: input.cloneFrom }).catch(bad);
+			return json(res, 200, { agents: (await setupView(factory.deps.config)).agents });
+		}
 		if (method === "GET" && area === "performance") return json(res, 200, await performance());
 		if (method === "GET" && area === "scoreboard") return json(res, 200, await factory.scoreboard());
 		if (method === "GET" && area === "stream") return state(res, url);
