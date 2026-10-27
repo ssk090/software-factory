@@ -73,7 +73,8 @@ and starts again:
   and a tool call that was cut off is reported to the model as interrupted (the model decides what to
   do, typically to run it again). No step starts over and no second conversation is made;
 - commands an agent left running when the process died are ended before anything resumes (each
-  agent command records its process group in `runs/<ticket>/exec.pids`);
+  agent command records its process group in `runs/<ticket>/exec.pids`).
+- the time the factory was off does not count against a running step's `AGENT_TIMEOUT`, so a long outage does not abort it on restart.
 - the approval gate keeps waiting; a paused ticket stays paused; the Sentry and pickup loops keep their timers;
 - today's model spend is read back from `state/usage.json`.
 
