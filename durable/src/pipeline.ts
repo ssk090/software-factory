@@ -727,6 +727,19 @@ export function createPipeline(deps: PipelineDeps) {
 			: { kind: "ste", level: "warn", step: step.name, text: `${file} still breaks ${faults.hard} rule(s)${failed ? ` (${failed})` : ""}: see the log of ${step.name}` });
 	};
 	const latestDone = (ticket: Ticket, role: string) => ticket.steps.findLast((s) => s.role === role && s.status === "done");
+	/**
+	 * Ask the agent that wrote a file to change it, in its own conversation, and lint its prose.
+	 * Returns the failure, or null when the file changed.
+	 */
+	const reviseFile = async (runtime: R, context: Context, ticket: Ticket, file: "spec.md" | "plan.md", prompt: string, tag: string): Promise<string | null> => {
+		const step = latestDone(ticket, file === "spec.md" ? "spec" : "plan");
+		if (step === undefined) return `no ${file === "spec.md" ? "spec writer" : "planner"} step to ask`;
+		const failed = await ask(runtime, context, step.conversationId, prompt, tag);
+		await refreshUsage(runtime, context, ticket.id, step);
+		if (failed !== null) return `${step.name}: ${failed}`;
+		await steCheck(runtime, context, ticket, file, step, tag);
+		return null;
+	};
 	/** A change you asked for at the gate: the spec writer (or the planner) makes it; a spec change then goes to the planner. */
 	const revise = async (task: T, runtime: R, context: Context, ticket: Ticket, rev: Revision) => {
 		const mark = (change: (r: Revision, t: Ticket) => void) =>
@@ -742,25 +755,15 @@ export function createPipeline(deps: PipelineDeps) {
 			addEvent(t, { kind: "gate", text: `Revising ${rev.file}: ${rev.comment.slice(0, 200)}` });
 		});
 		const before = await head(ticket.worktree!);
-		const files = rev.file === "spec.md" ? ["spec.md", "plan.md"] : ["plan.md"];
+		const files: ("spec.md" | "plan.md")[] = rev.file === "spec.md" ? ["spec.md", "plan.md"] : ["plan.md"];
 		const quote = rev.quote.trim() ? `The part they selected:\n${rev.quote.trim().split("\n").map((l) => `> ${l}`).join("\n")}\n\n` : "";
 		let error: string | null = null;
 		for (const file of files) {
-			const step = latestDone(ticket, file === "spec.md" ? "spec" : "plan");
-			if (step === undefined) {
-				error = `no ${file === "spec.md" ? "spec writer" : "planner"} step to ask`;
-				break;
-			}
 			const prompt = file === rev.file
 				? `A person reviewing ${file} before they approve it asks for a change.\n\n${quote}Their request:\n${rev.comment.trim()}\n\nUpdate RUN_DIR/${file} with the write or edit tool: make this change, and keep the rest unless the change needs more. Keep the format your first instructions give (also the Diagram section${file === "spec.md" ? " and the last STATUS line" : ""}). Reply with one short line that says what you changed.`
-				: `The spec changed after a review (RUN_DIR/spec.md). The change they asked for: ${rev.comment.trim()}\n\nRead spec.md again and update RUN_DIR/plan.md so it matches it: the tests and files for new or changed acceptance criteria, and the Diagram. Change nothing else. Reply with one short line.`;
-			const failed = await ask(runtime, context, step.conversationId, prompt, `revise:${rev.id}:${file}`);
-			await refreshUsage(runtime, context, ticket.id, step);
-			if (failed !== null) {
-				error = `${step.name}: ${failed}`;
-				break;
-			}
-			await steCheck(runtime, context, ticket, file, step, `revise:${rev.id}:${file}`);
+				: `The spec changed (RUN_DIR/spec.md). The change they asked for: ${rev.comment.trim()}\n\nRead spec.md again and update RUN_DIR/plan.md so it matches it: the tests and files for new or changed acceptance criteria, and the Diagram. Change nothing else. Reply with one short line.`;
+			error = await reviseFile(runtime, context, ticket, file, prompt, `revise:${rev.id}:${file}`);
+			if (error !== null) break;
 		}
 		if (error === null && (await head(ticket.worktree!)) !== before) error = "an agent committed to the branch, but it may only read";
 		await mark((r, t) => {
@@ -770,6 +773,32 @@ export function createPipeline(deps: PipelineDeps) {
 				: { kind: "gate", level: "error", text: `The change to ${rev.file} failed: ${error}` });
 		});
 	};
+
+
+	/**
+	 * The approval note is the person's last word on the spec: the spec writer and the planner take it
+	 * in before the build, so the reviewer can map the diff to the spec. Once per approval.
+	 */
+	const applyApprovalNote = async (runtime: R, context: Context, ticket: Ticket): Promise<void> => {
+		const note = ticket.approved?.note.trim() ?? "";
+		if (note === "" || ticket.noteApplied === ticket.approved?.at) return;
+		const before = await head(ticket.worktree!);
+		const at = ticket.approved!.at;
+		const spec = `A person approved this spec with a note that asks for a change.\n\nTheir note:\n${note}\n\nUpdate RUN_DIR/spec.md with the write or edit tool: make this change, and keep the rest unless the change needs more. Keep the format your first instructions give (also the Diagram section and the last STATUS line). Reply with one short line that says what you changed.`;
+		const plan = `The spec changed (RUN_DIR/spec.md). The approval note changed it: ${note}\n\nRead spec.md again and update RUN_DIR/plan.md so it matches it: the tests and files for new or changed acceptance criteria, and the Diagram. Change nothing else. Reply with one short line.`;
+		const error = (await reviseFile(runtime, context, ticket, "spec.md", spec, `note:${at}:spec.md`))
+			?? (await reviseFile(runtime, context, ticket, "plan.md", plan, `note:${at}:plan.md`))
+			?? ((await head(ticket.worktree!)) !== before ? "an agent committed to the branch, but it may only read" : null);
+		if (error !== null) throw new Blocked(`the approval note did not reach spec.md: ${error}`);
+		await runtime.commit(async (tx) => {
+			await editTicket(tx, ticket.id, (t) => {
+				t.noteApplied = at;
+				addEvent(t, { kind: "gate", text: "The approval note changed spec.md, and plan.md follows it" });
+			});
+			return undefined;
+		}, context);
+	};
+
 
 	/** A reader only reads: HEAD must not move, and the worktree must hold only committed work. */
 	const readOnly = async (ticket: Ticket, stepHead: string | null, label: string) => {
@@ -881,7 +910,7 @@ export function createPipeline(deps: PipelineDeps) {
 			await advance(task, runtime, context, { phase: "admit", freshDone: true }, (t) => {
 				Object.assign(t, { cid: info.cid, title: info.title, url: info.url, branch, run, worktree: join(config.treesDir, info.cid), blocked: null });
 				t.state = "queued";
-				if (fresh) Object.assign(t, { specStatus: null, approved: null, verify: [], reviews: [], pr: null, backendPrs: [], judge: null, resume: null });
+				if (fresh) Object.assign(t, { specStatus: null, approved: null, noteApplied: null, verify: [], reviews: [], pr: null, backendPrs: [], judge: null, resume: null });
 				if (task.input.build) t.mode = "build";
 			});
 		},
@@ -1097,6 +1126,8 @@ export function createPipeline(deps: PipelineDeps) {
 			const { ticket: md, comments } = await tracker.fetch(ticket.id);
 			await writeFile(join(ticket.run!, "ticket.md"), md);
 			await writeFile(join(ticket.run!, "comments.md"), ticket.approved.note ? `${comments}\n[approval note] ${ticket.approved.note}\n` : comments);
+			// A note that changes behaviour must reach spec.md and plan.md before the build.
+			await applyApprovalNote(runtime, context, ticket);
 			await setStatus(runtime, context, ticket, config.statuses.working);
 			await advance(task, runtime, context, { phase: "setup", polls: 0 }, (t) => {
 				t.state = "running";
