@@ -3,6 +3,7 @@
 //   cd durable && npm test
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { chmod, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -711,6 +712,59 @@ describe("pipeline", { timeout: 600_000 }, () => {
 			await factory.setTicketModels("T-68", { confirm: true });
 			const picked = await settle(factory, "T-68");
 			assert.equal(picked.state, "in_review", picked.blocked ?? "");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("stops when the base moved and the merge conflicts, instead of opening a conflicted PR", async () => {
+		let moved = false;
+		let w!: Awaited<ReturnType<typeof world>>;
+		w = await world({
+			onCoder: () => {
+				if (moved) return;
+				moved = true;
+				writeFileSync(join(w.repo, "file.txt"), "base\n");
+				w.git(w.repo, "add", "file.txt");
+				w.git(w.repo, "commit", "-q", "-m", "base: file");
+				w.git(w.repo, "push", "-q", "origin", "main");
+			},
+		}, { MAX_REPAIRS: "0" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-69", { gate: false });
+			const t = await settle(factory, "T-69");
+			assert.equal(t.state, "blocked");
+			assert.match(t.blocked ?? "", /conflicts with .*: file\.txt/);
+			assert.equal(w.gitHost.log.filter((l) => l.startsWith("create ")).length, 0, "no conflicted PR");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("merges the moved base before the PR summary, then checks the merge", async () => {
+		let moved = false;
+		let w!: Awaited<ReturnType<typeof world>>;
+		w = await world({
+			onCoder: () => {
+				if (moved) return;
+				moved = true;
+				writeFileSync(join(w.repo, "BASE.md"), "moved\n");
+				w.git(w.repo, "add", "BASE.md");
+				w.git(w.repo, "commit", "-q", "-m", "base: moved");
+				w.git(w.repo, "push", "-q", "origin", "main");
+			},
+		}, { VERIFY_CMD: "test -f README.md" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-70", { gate: false });
+			const t = await settle(factory, "T-70");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.events.some((e) => e.text === "Merged origin/main into feature/T-70/test-ticket-t-70"), t.events.map((e) => e.text).join("\n"));
+			assert.match(w.git(t.worktree!, "show", "HEAD:BASE.md").toString(), /moved/);
+			assert.ok(t.events.some((e) => e.text === "VERIFY_CMD passes after the base merge (verify-sync.log)"));
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });

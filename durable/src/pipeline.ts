@@ -6,7 +6,7 @@
 // same conversation and the same submission, and the agent continues mid-step.
 //
 //   start -> admit -> fetch -> worktree -> spec -> plan -> post-spec -> gate (you approve)
-//   -> setup -> verify-base -> test -> code -> verify-code [-> code #2] -> docs -> runtime (UI) -> pr-summary
+//   -> setup -> verify-base -> test -> code -> verify-code [-> code #2] -> docs -> runtime (UI) -> sync-base -> pr-summary
 //   -> pr (backend PRs first, BACKEND_REPOS) -> review <-> fix -> pr-summary #2 -> judge -> report
 //
 // Effects outside the session are made safe to repeat: tracker statuses and pushes are idempotent,
@@ -74,7 +74,7 @@ export type PipelineInput = {
 type Step = { role: string; round: number; attempt: number; conversationId: number; model: string; started: number };
 type Phase =
 	| "start" | "admit" | "fetch" | "models" | "worktree" | "spec" | "plan" | "post-spec" | "gate" | "setup" | "verify-base"
-	| "test" | "code" | "verify-code" | "docs" | "runtime" | "pr-summary" | "pr" | "review" | "fix" | "push-fix" | "pr-summary-2" | "judge" | "report";
+	| "test" | "code" | "verify-code" | "docs" | "runtime" | "sync-base" | "pr-summary" | "pr" | "review" | "fix" | "push-fix" | "pr-summary-2" | "judge" | "report";
 export type Checkpoint = {
 	phase: Phase;
 	/** The running agent step, or null between steps. */
@@ -116,6 +116,7 @@ export const PHASES: readonly { phase: Phase; label: string }[] = [
 	{ phase: "verify-code", label: "Verify the code" },
 	{ phase: "docs", label: "Docs" },
 	{ phase: "runtime", label: "Browser check" },
+	{ phase: "sync-base", label: "Sync the base" },
 	{ phase: "pr-summary", label: "PR summary" },
 	{ phase: "pr", label: "Open the PR" },
 	{ phase: "review", label: "Review" },
@@ -502,13 +503,12 @@ export function createPipeline(deps: PipelineDeps) {
 	 * verify <round>: the factory runs VERIFY_CMD itself and does not take an agent's word. Round 1 is
 	 * the untouched base branch. When that already fails, the gate only reports.
 	 */
-	const verify = async (ticket: Ticket, round: number, baselineRed: boolean, context: Context): Promise<{ ok: boolean; killed: boolean; tail: string }> => {
+	const verify = async (ticket: Ticket, round: number, baselineRed: boolean, context: Context, logName = `verify-${round}.log`): Promise<{ ok: boolean; killed: boolean; tail: string }> => {
 		if (!config.verifyCmd) return { ok: true, killed: false, tail: "" };
-		const code = await exec(ticket, await verifyCommand(), `verify-${round}.log`, context);
+		const code = await exec(ticket, await verifyCommand(), logName, context);
 		const failed = join(ticket.run!, "verify-failed.md");
-		const log = (await readText(join(ticket.run!, `verify-${round}.log`))).split("\n");
-		const tail = log.slice(-120).join("\n");
-		// Killed (out of memory, SIGKILL) is no result at all: never a red base, and not the code's fault.
+		const log = (await readText(join(ticket.run!, logName))).split("\n");
+		const tail = log.slice(-120).join("\n");		// Killed (out of memory, SIGKILL) is no result at all: never a red base, and not the code's fault.
 		const killed = code !== 0 && KILLED.test(tail);
 		// The branch's failure is always a file, even when the base already fails: the reviewer must see
 		// what this ticket broke, next to the failure that was there before it.
@@ -1274,7 +1274,7 @@ export function createPipeline(deps: PipelineDeps) {
 						? "the change touches no UI file"
 						: null;
 			if (why !== null) {
-				await advance(task, runtime, context, { phase: "pr-summary", step: null }, (t) => {
+				await advance(task, runtime, context, { phase: "sync-base", step: null }, (t) => {
 					if (config.runtimeCheck) addEvent(t, { kind: "runtime", text: `Browser check skipped: ${why}` });
 				});
 				return;
@@ -1285,8 +1285,31 @@ export function createPipeline(deps: PipelineDeps) {
 			const check = await readText(join(after.run!, "runtime.md"));
 			if (check.trim() === "") throw new Blocked("runtime checker wrote no runtime.md");
 			const verdict = /^VERDICT: FAIL$/m.test(check) ? "FAIL" : /^VERDICT: PASS$/m.test(check) ? "PASS" : "not run";
-			await advance(task, runtime, context, { phase: "pr-summary", step: null }, (t) => {
+			await advance(task, runtime, context, { phase: "sync-base", step: null }, (t) => {
 				addEvent(t, { kind: "runtime", level: verdict === "FAIL" ? "warn" : "info", text: `Browser check: ${verdict} (runtime.md)` });
+			});
+		},
+		"sync-base": async (task, runtime, context) => {
+			const ticket = await ticketOf(task, runtime, context);
+			// The base may move during a long run: bring it in before the review, or the PR conflicts.
+			const fetched = await git(ticket.worktree!, "fetch", "-q", "origin", config.base);
+			if (fetched.code !== 0) throw new Blocked(`git fetch origin ${config.base}: ${fetched.stderr.trim()}`);
+			const merged = await git(ticket.worktree!, "merge", "--no-edit", `refs/remotes/origin/${config.base}`);
+			if (merged.code !== 0) {
+				// A conflict is the coordinator's job: it knows both intents. Abort here, so the worktree is clean.
+				const conflicts = (await gitOk(ticket.worktree!, "status", "--porcelain")).split("\n").map((l) => l.slice(3).trim()).filter((f) => f !== "");
+				await git(ticket.worktree!, "merge", "--abort");
+				throw new Repairable("conflict", `the base moved and origin/${config.base} conflicts with ${ticket.branch}: ${conflicts.join(", ") || "unknown files"}`, `$ git merge origin/${config.base}\n\n${merged.stdout}\n${merged.stderr}\n\nConflicting files:\n${conflicts.join("\n")}`);
+			}
+			const moved = !/Already up to date/i.test(merged.stdout);
+			// The base's own changes can break this branch: the check runs on the merge.
+			const { ok, killed, tail } = await verify(ticket, 0, task.state.checkpoint.baselineRed, context, "verify-sync.log");
+			if (killed && (await canRepair(task, "sync-base"))) throw new Repairable("killed", "VERIFY_CMD was killed after the base merge (out of memory or SIGKILL)", `$ ${await verifyCommand()}\n${tail}`);
+			if (killed) throw new Blocked(`VERIFY_CMD was killed after the base merge (out of memory or SIGKILL, verify-sync.log): ${KILLED_HELP}`);
+			if (!ok && !task.state.checkpoint.baselineRed) throw new Repairable("verify", "VERIFY_CMD fails after the base merge (verify-sync.log)", `$ ${await verifyCommand()}\n${tail}`);
+			await advance(task, runtime, context, { phase: "pr-summary", step: null }, (t) => {
+				addEvent(t, { kind: "git", text: moved ? `Merged origin/${config.base} into ${t.branch}` : `The base did not move: origin/${config.base} is already in ${t.branch}` });
+				if (config.verifyCmd) addEvent(t, { kind: "verify", level: ok ? "info" : "warn", text: `VERIFY_CMD ${ok ? "passes" : "fails"} after the base merge (verify-sync.log)` });
 			});
 		},
 		"pr-summary": async (task, runtime, context) => {
@@ -1481,6 +1504,7 @@ export function createPipeline(deps: PipelineDeps) {
 		const did = error.kind === "push" ? `git push origin HEAD:refs/heads/${ticket.branch}${container(ticket) !== null ? ". The repo's pre-push hook runs in the sandbox first (pre-push.log), where the dependencies were installed" : " (this runs the repo's pre-push hooks on the branch)"}`
 			: error.kind === "scope" ? "the factory's check that the push holds only what the ticket needs (no build output, caches, logs, editor files, run-folder files, or a lockfile changed without a package.json)"
 			: error.kind === "secrets" ? "the factory's secret scan of everything the push would send: added lines, added files, commit messages"
+			: error.kind === "conflict" ? `git merge origin/${config.base} in the ticket's worktree. The merge stopped on a conflict and was aborted. The files are in the output`
 			: error.kind === "blocked" ? `the coder (${cp.step ? `${cp.step.role}-${cp.step.round}-${cp.step.attempt}` : "the step"}) stopped and wrote blocked.md (below). Its work, committed or not, is in the worktree`
 			: error.kind === "killed" ? `VERIFY_CMD in the sandbox: ${await verifyCommand()}${config.verifyCmd !== (await verifyCommand()) ? ` (the learned way to run ${config.verifyCmd})` : ""}. It was killed by the system before it finished: no result. The sandbox has the memory Docker gives it${config.sandboxArgs.length ? ` (SANDBOX_ARGS: ${config.sandboxArgs.join(" ")})` : " (no SANDBOX_ARGS limit)"}`
 			: `VERIFY_CMD: ${await verifyCommand()}`;
