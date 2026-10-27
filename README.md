@@ -25,6 +25,8 @@ One dashboard shows what needs you:
   planner; you read the spec on the dashboard and *Approve and build* (a note goes to the coder).
 - **Factory runs:** every ticket, its steps and models, its spec, plan and reviews, a live view of the
   agent at work, and a box to *steer* it while it runs.
+- **Performance:** the factory's CPU, memory, agents, tokens and first-token time, as strip graphs you
+  can watch refresh every 1, 5 or 10 seconds.
 
 Needs: Node 22.19 or newer, git 2.31 or newer, gh, Docker (for the sandbox), a ClickUp token, and an
 API key for at least one model provider (Anthropic, OpenAI, ...). Sentry is optional.
@@ -185,6 +187,7 @@ Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover
 - **Live preview of the spec and plan:** click a spec or plan step: the reader opens the file, and while the step runs it shows the file as the agent types it (the write call is streamed from the model, argument by argument).
 - **Steer:** your message joins the running step after its current tool round.
 - **Spend:** today's model spend against the daily budget, in the sidebar and a stat card, and any request waiting for a rate limit.
+- **Performance:** a view for CPU, memory, agents, tokens and first-token time, sampled once a second by the server. Four stat cards show this process's CPU (with the machine, load and event loop lag), the running agents, today's tokens and the latest first token. Three strip graphs, long on time and short on value like a torrent client, draw the last five minutes: process and machine CPU, output and input tokens a second, and the first-token time (a gap where there was no request). The chip in the bar says *CPU saturated* or *event loop blocked* when the machine is the bottleneck. Below, the running steps and the last twelve that ended list their model, time, tokens, tokens a second, first-token time and cost. The *Refresh* Select sets 1, 5 or 10 seconds, only this view polls, and the browser keeps the choice. `GET /api/performance` gives the same data.
 
 ### Rate limits and the daily budget
 Every model request of every agent goes through one throttle (`durable/src/throttle.ts`), per provider (one API key each):
@@ -294,7 +297,7 @@ Every setting, with its default, is in `config.example.env`.
 | `src/ste.ts` | Simplified Technical English for STE_ROLES: the prompt rules, the write gate, the file check (agent-ste) |
 | `src/throttle.ts` | every model request: rate limits per provider, the daily budget, paused tickets' requests |
 | `src/tracker.ts`, `src/github.ts`, `src/sentry.ts`, `src/http.ts` | ClickUp, GitHub (`gh`), Sentry |
-| `src/server.ts`, `dashboard/index.html` | the dashboard and its API; `dashboard/DESIGN.md` is its design guide (shadcn/ui tokens and components) |
+| `src/server.ts`, `src/metrics.ts`, `dashboard/index.html` | the dashboard and its API, and the one-second performance samples; `dashboard/DESIGN.md` is its design guide (shadcn/ui tokens and components) |
 | `test/` | the tests and their fakes (`support.ts`) |
 
 ## Troubleshooting

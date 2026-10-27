@@ -190,6 +190,19 @@
   .banner { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; padding: 10px 14px; border: 1px solid color-mix(in oklch, var(--warning) 40%, transparent); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--warning) 10%, transparent); font-size: 13px; }
   .banner .ic { margin-top: 2px; color: var(--warning); }
   .stat .sub { margin-top: 2px; font-size: 12px; color: var(--muted-foreground); }
+  /* Performance: stat tiles and one strip chart per signal (long x, short y, like a torrent client) */
+  .perf-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .perf-card + .perf-card { margin-top: 16px; }
+  .strip { width: 100%; }
+  .strip svg { display: block; width: 100%; height: 132px; }
+  .strip-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 6px; font-size: 12px; color: var(--muted-foreground); }
+  .strip-key { display: inline-flex; align-items: center; gap: 6px; }
+  .strip-key i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+  .strip-key strong { font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums; }
+  .strip-note { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .strip-axis { display: flex; justify-content: space-between; margin-top: 2px; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  table.perf-steps td { white-space: nowrap; }
+  table.perf-steps td.name { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 
   /* Ticket detail: controls, Tabs (segmented), the timeline, the log */
   .notice { margin-bottom: 12px; padding: 8px 12px; border: 1px solid color-mix(in oklch, var(--warning) 40%, transparent); border-radius: var(--radius-md); background: color-mix(in oklch, var(--warning) 10%, transparent); font-size: 13px; }
@@ -467,7 +480,7 @@
     *, *::before, *::after { animation: none !important; transition: none !important; }
   }
 
-  @media (max-width: 1100px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 1100px) { .stats, .perf-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 760px) {
     .icon-btn { display: none; }
     .shell { grid-template-columns: minmax(0, 1fr); }
@@ -479,6 +492,8 @@
     .sidebar-foot { margin: 0 0 0 auto; }
     .page { padding: 16px; }
     .stats { grid-template-columns: minmax(0, 1fr); }
+    .perf-stats { grid-template-columns: minmax(0, 1fr); }
+    .strip svg { height: 108px; }
     main.open { grid-template-columns: minmax(0, 1fr); }
     aside { position: static; max-height: none; }
   }
@@ -496,6 +511,7 @@
       <button data-tab="sentry" class="on" title="Fix first"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><span class="label">Fix first</span><span id="n-sentry" class="count muted"></span></button>
       <button data-tab="sprint" title="My sprint"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg><span class="label">My sprint</span><span id="n-sprint" class="count muted"></span></button>
       <button data-tab="runs" title="Factory runs"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg><span class="label">Factory runs</span><span id="n-runs" class="count muted"></span></button>
+      <button data-tab="perf" title="Performance"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span class="label">Performance</span><span id="n-perf" class="count muted"></span></button>
     </nav>
     <div class="sidebar-foot">
       <div class="meter" id="meter" title="Model spend today, across every API key">
@@ -532,6 +548,33 @@
       <div class="bar"><h2>Factory runs</h2><span class="grow"></span><input type="text" id="run-ref" placeholder="Ticket key, id or URL" style="width:260px"><button class="act primary" id="run-start">Plan spec</button><span class="auto-switch"></span></div>
       <table><thead><tr><th>Ticket</th><th>State</th><th>Phase</th><th>Step</th><th>PR</th><th>Updated</th><th></th></tr></thead><tbody id="run-rows"></tbody></table>
     </section>
+    <div id="tab-perf" hidden>
+      <div class="bar"><h2>Performance</h2><span class="chip" id="perf-health">idle</span><span class="grow"></span><span id="perf-note" class="muted"></span>
+        <label class="muted" for="perf-every">Refresh</label>
+        <select id="perf-every" title="How often the graphs read the server"><option value="1000">1 second</option><option value="5000" selected>5 seconds</option><option value="10000">10 seconds</option></select></div>
+      <div class="perf-stats">
+        <div class="stat"><div class="label">CPU, this process</div><div class="value" id="perf-cpu">–</div><div class="sub" id="perf-cpu-sub"></div></div>
+        <div class="stat"><div class="label">Agents</div><div class="value" id="perf-agents">0</div><div class="sub" id="perf-agents-sub"></div></div>
+        <div class="stat"><div class="label">Tokens today</div><div class="value" id="perf-tokens">0</div><div class="sub" id="perf-tokens-sub"></div></div>
+        <div class="stat"><div class="label">First token</div><div class="value" id="perf-ttft">–</div><div class="sub" id="perf-ttft-sub"></div></div>
+      </div>
+      <section class="card perf-card">
+        <div class="bar"><h2>CPU</h2><span class="muted">this process against the whole machine</span></div>
+        <div class="strip" id="perf-cpu-chart"></div>
+      </section>
+      <section class="card perf-card">
+        <div class="bar"><h2>Model tokens</h2><span class="muted">a second, over the last minute</span></div>
+        <div class="strip" id="perf-token-chart"></div>
+      </section>
+      <section class="card perf-card">
+        <div class="bar"><h2>First token</h2><span class="muted">time from the request to the first token the agent reads</span></div>
+        <div class="strip" id="perf-ttft-chart"></div>
+      </section>
+      <section class="card perf-card">
+        <div class="bar"><h2>Agent steps</h2><span class="grow"></span><span class="muted" id="perf-steps-note"></span></div>
+        <table class="perf-steps"><thead><tr><th>Step</th><th>Ticket</th><th>Model</th><th>State</th><th class="num">Time</th><th class="num">Tokens</th><th class="num">Tok/s</th><th class="num">First token</th><th class="num">Cost</th></tr></thead><tbody id="perf-step-rows"></tbody></table>
+      </section>
+    </div>
   </div>
   <aside id="detail"></aside>
 </main>
@@ -611,7 +654,7 @@ const span = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 // Motion only for what changed: replay a one-shot animation, animate rows the first time they appear, bump a number that moved.
 const replay = (node, cls) => { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); };
-const seenRows = { sentry: new Set(), sprint: new Set(), runs: new Set() };
+const seenRows = { sentry: new Set(), sprint: new Set(), runs: new Set(), perf: new Set() };
 const enterRow = (table, key, row, i) => { if (!seenRows[table].has(key)) { row.classList.add("enter"); row.style.animationDelay = `${Math.min(i, 10) * 20}ms`; seenRows[table].add(key); } return row; };
 const setStat = (id, value) => { const node = $(id); if (node.textContent !== value) { const first = node.dataset.set !== "1"; node.textContent = value; node.dataset.set = "1"; if (!first) replay(node, "bump"); } };
 const empty = (cols, text) => el("tr", {}, el("td", { colspan: cols, class: "empty" }, text));
@@ -634,9 +677,10 @@ let tab = "sentry";
 for (const b of document.querySelectorAll("#tabs button")) b.addEventListener("click", () => {
   tab = b.dataset.tab;
   for (const x of document.querySelectorAll("#tabs button")) x.classList.toggle("on", x === b);
-  for (const name of ["sentry", "sprint", "runs"]) $(`tab-${name}`).hidden = name !== tab;
+  for (const name of ["sentry", "sprint", "runs", "perf"]) $(`tab-${name}`).hidden = name !== tab;
   replay($(`tab-${tab}`), "view-in");
   if (tab === "sprint") loadSprint(false);
+  if (tab === "perf") loadPerf();
 });
 
 // ---- Sentry ----
@@ -748,6 +792,158 @@ function removeTicket(button, t) {
   });
 }
 $("run-start").addEventListener("click", (e) => act(e.target, async () => { const ref = $("run-ref").value.trim(); if (!ref) throw new Error("enter a ticket"); const r = await api(`/api/tickets/${encodeURIComponent(ref)}/start`, { gate: true, autoApprove }); openTicket(r.ticketId); }));
+
+// ---- Performance: CPU, memory, agents, tokens and first-token time, from /api/performance ----
+let perf = null, perfEvery = 5000, perfTimer = null, perfDrawFrame = 0, perfWidth = 0;
+try { const saved = Number(localStorage.getItem("sf.perfEvery")); if ([1000, 5000, 10000].includes(saved)) perfEvery = saved; } catch { /* storage is optional */ }
+$("perf-every").value = String(perfEvery);
+/** Read the page again every 1, 5 or 10 seconds, while it is the open tab. */
+function perfClock() {
+  clearInterval(perfTimer);
+  perfTimer = setInterval(() => { if (tab === "perf") loadPerf(); }, perfEvery);
+}
+function schedulePerfDraw() {
+  cancelAnimationFrame(perfDrawFrame);
+  perfDrawFrame = requestAnimationFrame(() => drawPerf());
+}
+async function loadPerf() {
+  if (tab !== "perf") return;
+  try {
+    perf = await api("/api/performance");
+    $("perf-note").textContent = `sampled every second · updated ${new Date().toLocaleTimeString()}`;
+    $("perf-note").className = "muted";
+    drawPerf();
+  } catch (e) {
+    $("perf-note").textContent = e.message;
+    $("perf-note").className = "error";
+  }
+}
+const msText = (n) => n === null || n === undefined ? "–" : n >= 1000 ? `${(n / 1000).toFixed(1)} s` : `${Math.round(n)} ms`;
+const niceMax = (value) => { if (!(value > 0)) return 1; const power = 10 ** Math.floor(Math.log10(value)); const n = value / power; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * power; };
+const rate = (v, unit) => v === null || v === undefined ? "–" : unit === "%" ? `${v.toFixed(1)}%` : unit === "ms" ? msText(v) : `${v < 10 ? v.toFixed(1) : Math.round(v)}/s`;
+const SVG = "http://www.w3.org/2000/svg";
+const svgNode = (name, attrs = {}) => {
+  const node = document.createElementNS(SVG, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+  return node;
+};
+const svgText = (text, x, y, anchor = "start") => {
+  const node = svgNode("text", { x, y, "font-size": 10, "text-anchor": anchor, style: "fill: var(--muted-foreground)" });
+  node.textContent = text;
+  return node;
+};
+/**
+ * A strip chart: the last five minutes on the long axis, a short axis for the value, like the graphs
+ * in a torrent client. Gaps stay gaps, so an idle minute does not look like a fast one.
+ */
+function stripChart(host, points, series, options = {}) {
+  const width = Math.max(280, Math.round(host.clientWidth || 800));
+  const height = matchMedia("(max-width: 760px)").matches ? 108 : 132;
+  const pad = { top: 12, right: 4, bottom: 4, left: 4 };
+  const end = points.at(-1)?.t ?? Date.now();
+  const start = end - 5 * 60_000;
+  const peak = Math.max(0, ...points.flatMap((p) => series.map((s) => (typeof p[s.key] === "number" ? p[s.key] : 0))));
+  const max = options.max ?? niceMax(peak * 1.1);
+  const x = (t) => pad.left + ((Math.min(end, Math.max(start, t)) - start) / (end - start)) * (width - pad.left - pad.right);
+  const y = (v) => pad.top + (1 - Math.min(1, v / max)) * (height - pad.top - pad.bottom);
+  const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": options.label ?? "A performance graph" });
+  const defs = svgNode("defs");
+  for (const share of [0, 0.25, 0.5, 0.75, 1]) {
+    const yy = pad.top + share * (height - pad.top - pad.bottom);
+    svg.append(svgNode("line", { x1: pad.left, x2: width - pad.right, y1: yy, y2: yy, "stroke-width": 1, "stroke-dasharray": share === 1 || share === 0 ? "0" : "2 4", style: "stroke: var(--border)" }));
+  }
+  series.forEach((s, index) => {
+    const gradient = svgNode("linearGradient", { id: `perf-g-${host.id}-${index}`, x1: 0, y1: 0, x2: 0, y2: 1 });
+    gradient.append(svgNode("stop", { offset: "0%", style: `stop-color: ${s.color}; stop-opacity: .24` }));
+    gradient.append(svgNode("stop", { offset: "100%", style: `stop-color: ${s.color}; stop-opacity: 0` }));
+    defs.append(gradient);
+  });
+  svg.append(defs);
+  // One path per run of values: a null is a real gap (no request to measure).
+  const runs = (key) => {
+    const out = [];
+    let run = [];
+    for (const point of points) {
+      const value = point[key];
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        if (run.length > 0) out.push(run);
+        run = [];
+        continue;
+      }
+      run.push([x(point.t), y(value)]);
+    }
+    if (run.length > 0) out.push(run);
+    return out;
+  };
+  series.forEach((s, index) => {
+    for (const run of runs(s.key)) {
+      const line = run.map(([px, py], i) => `${i === 0 ? "M" : "L"}${px.toFixed(1)},${py.toFixed(1)}`).join("");
+      if (run.length === 1) {
+        svg.append(svgNode("circle", { cx: run[0][0], cy: run[0][1], r: 2, style: `fill: ${s.color}` }));
+        continue;
+      }
+      const base = y(0).toFixed(1);
+      svg.append(svgNode("path", { d: `${line}L${run.at(-1)[0].toFixed(1)},${base}L${run[0][0].toFixed(1)},${base}Z`, fill: `url(#perf-g-${host.id}-${index})`, stroke: "none" }));
+      svg.append(svgNode("path", { d: line, fill: "none", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round", style: `stroke: ${s.color}` }));
+    }
+    const last = points.findLast((p) => typeof p[s.key] === "number");
+    if (last !== undefined) svg.append(svgNode("circle", { cx: x(last.t), cy: y(last[s.key]), r: 2.5, style: `fill: ${s.color}` }));
+  });
+  svg.append(svgText(rate(max, options.unit), pad.left + 2, 10), svgText("0", pad.left + 2, height - 2));
+  const last = points.at(-1);
+  const legend = el("div", { class: "strip-legend" }, ...series.map((s) => el("span", { class: "strip-key", style: `--c:${s.color}` }, el("i"), el("span", {}, s.label), el("strong", {}, rate(last?.[s.key], options.unit)))), options.note ? el("span", { class: "strip-note" }, options.note) : null);
+  host.replaceChildren(legend, svg, el("div", { class: "strip-axis" }, el("span", {}, "5 min ago"), el("span", {}, "now")));
+}
+function drawPerf() {
+  if (!perf || tab !== "perf") return;
+  const p = perf, now = p.now, agents = p.agents, t = p.summary.ttft;
+  setStat("perf-cpu", `${now.cpu.toFixed(1)}%`);
+  $("perf-cpu-sub").textContent = `machine ${now.sys.toFixed(1)}% · load ${now.load[0].toFixed(1)} of ${now.cores} cores · RSS ${Math.round(now.rss)} MB · loop lag ${Math.round(now.lag)} ms`;
+  setStat("perf-agents", String(agents.running));
+  $("perf-agents-sub").textContent = `${agents.queued} queued · ${agents.max} at once · ${agents.done24h} done, ${agents.failed24h} failed in 24h`;
+  setStat("perf-tokens", tokens(p.usage.today.total.tokens));
+  $("perf-tokens-sub").textContent = `${p.usage.today.total.requests} requests · ${money(p.usage.today.total.cost)} today`;
+  const lastTtft = p.points.at(-1)?.ttft ?? null;
+  setStat("perf-ttft", lastTtft === null ? "–" : `${Math.round(lastTtft)}ms`);
+  $("perf-ttft-sub").textContent = t.count === 0 ? "no request in the last minute" : `p50 ${Math.round(t.p50)}ms · p95 ${Math.round(t.p95)}ms · ${t.count} requests in the last minute`;
+  const loadShare = now.cores > 0 ? now.load[0] / now.cores : now.load[0];
+  const health = now.sys >= 90 || loadShare >= 0.9 ? ["CPU saturated", "warn"] : now.lag >= 200 ? ["event loop blocked", "bad"] : agents.running > 0 ? ["running", "run"] : ["idle", "ok"];
+  $("perf-health").textContent = health[0];
+  $("perf-health").className = `chip ${health[1]}`;
+  stripChart($("perf-cpu-chart"), p.points, [
+    { key: "cpu", label: "Process, one core", color: "var(--info)" },
+    { key: "sys", label: "Machine, all cores", color: "var(--warning)" },
+  ], { unit: "%", label: "CPU of this process and of the machine, the last five minutes", max: Math.max(100, Math.ceil(Math.max(0, ...p.points.map((x) => x.cpu), ...p.points.map((x) => x.sys)) / 100) * 100) });
+  stripChart($("perf-token-chart"), p.points, [
+    { key: "tout", label: "Output", color: "var(--success)" },
+    { key: "tin", label: "Input", color: "var(--teal)" },
+  ], { unit: "/s", label: "Model output and input tokens a second, the last five minutes", note: `${(p.points.at(-1)?.reqs ?? 0).toFixed(1)} requests/min` });
+  stripChart($("perf-ttft-chart"), p.points, [{ key: "ttft", label: "First token", color: "var(--violet)" }], { unit: "ms", label: "Time from the request to the first token, the last five minutes" });
+  const rows = p.steps.map((s, n) => enterRow("perf", `${s.ticket}:${s.name}`, el("tr", { class: "click", onclick: () => openTicket(s.ticket) },
+    el("td", { class: "name" }, s.name), el("td", {}, s.cid), el("td", {}, s.model.split("/").pop()),
+    el("td", {}, el("span", { class: `chip sm ${s.status === "running" ? "run" : s.status === "done" ? "ok" : s.status === "failed" ? "bad" : ""}` }, s.status)),
+    el("td", { class: "num" }, span(s.ms)), el("td", { class: "num" }, tokens(s.tokens)),
+    el("td", { class: "num" }, s.tps === null ? "–" : s.tps.toFixed(1)),
+    el("td", { class: "num" }, s.ttft === null ? "–" : `${Math.round(s.ttft)}ms`),
+    el("td", { class: "num" }, s.cost ? money(s.cost) : "–")), n));
+  $("perf-step-rows").replaceChildren(...rows);
+  if (rows.length === 0) $("perf-step-rows").replaceChildren(empty(9, "No agent steps yet. Start a ticket to see them here."));
+  $("perf-steps-note").textContent = `${p.steps.filter((s) => s.status === "running").length} running · the last ${p.steps.filter((s) => s.status !== "running").length} that ended`;
+}
+$("perf-every").addEventListener("change", () => {
+  perfEvery = Number($("perf-every").value);
+  try { localStorage.setItem("sf.perfEvery", String(perfEvery)); } catch { /* storage is optional */ }
+  perfClock();
+  loadPerf();
+});
+perfClock();
+// The panel changes width when the ticket aside opens: redraw the strips at the new width.
+if (typeof ResizeObserver === "function") new ResizeObserver((entries) => {
+  const width = Math.round(entries[0]?.contentRect.width ?? 0);
+  if (width === perfWidth) return;
+  perfWidth = width;
+  if (tab === "perf" && perf) schedulePerfDraw();
+}).observe($("tab-perf"));
 
 // ---- Ticket detail: controls, timeline, logs, files, and a live step ----
 let openId = null, source = null, liveFor = null, lastLive = null, lastSig = "";
@@ -1977,6 +2173,7 @@ function applyOverview(data) {
   PHASE_LABEL = Object.fromEntries((overview.phases || []).map((p) => [p.phase, p.label]));
   drawUsage(overview.usage);
   drawSentry(); drawRuns(); drawSprint();
+  $("n-perf").textContent = String(overview.tickets.reduce((n, t) => n + (t.steps || []).filter((s) => s.status === "running").length, 0));
   $("status").textContent = `${streamOk ? "live" : "updated"} ${new Date().toLocaleTimeString()}`;
 }
 /** Fetch everything now (after an action, or while the stream is down). */

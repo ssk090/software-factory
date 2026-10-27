@@ -15,6 +15,7 @@ import type { Ticket } from "./docs.ts";
 import type { Factory } from "./host.ts";
 import { branchChanges, stepDiff } from "./diff.ts";
 import { git } from "./git.ts";
+import { Metrics } from "./metrics.ts";
 import { PHASES } from "./pipeline.ts";
 import { score } from "./sentry.ts";
 
@@ -192,6 +193,7 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 		const [, area, key, action] = parts;
 
 		if (method === "GET" && area === "overview") return json(res, 200, await overview());
+		if (method === "GET" && area === "performance") return json(res, 200, await performance());
 		if (method === "GET" && area === "stream") return state(res, url);
 		if (method === "GET" && area === "sprint") {
 			try {
@@ -272,6 +274,7 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 	const overview = async () => {
 		const tickets = await factory.tickets();
 		const inbox = await factory.inbox();
+		metrics.observe(tickets.reduce((n, t) => n + t.steps.filter((s) => s.status === "running").length, 0), tickets.filter((t) => t.state === "queued").length);
 		const issues = Object.values(inbox.issues).map((i) => ({ ...i, score: score(i) })).sort((a, b) => b.score - a.score || b.lastSeen.localeCompare(a.lastSeen));
 		const { config } = factory.deps;
 		return {
@@ -283,6 +286,43 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 			phases: PHASES,
 		};
 	};
+	/** The Performance page: this process and the machine, the agents, and their model use. */
+	const performance = async () => {
+		const now = Date.now();
+		const tickets = await factory.tickets();
+		const queued = tickets.filter((t) => t.state === "queued").length;
+		const entries = tickets.flatMap((ticket) => ticket.steps.map((step) => ({ ticket, step })));
+		const live = entries.filter((x) => x.step.status === "running");
+		const recent = entries.filter((x) => x.step.status !== "running").sort((a, b) => b.step.started - a.step.started).slice(0, 12);
+		metrics.observe(live.length, queued);
+		const steps = await Promise.all([...live, ...recent].map(async ({ ticket, step }) => {
+			// A running step's usage is not committed until it ends: read its conversation now.
+			const usage = step.usage ?? (step.status === "running" ? await factory.stepUsage(step.conversationId) : null);
+			const session = step.sessionId === undefined ? null : metrics.session(step.sessionId);
+			const ms = Math.max(0, (step.ended ?? now) - step.started - (step.pausedMs ?? 0));
+			const tokens = usage?.tokens ?? 0;
+			return {
+				ticket: ticket.id, cid: ticket.cid, name: step.name, role: step.role, model: step.model, status: step.status,
+				started: step.started, ms, tokens, cost: usage?.cost ?? 0, input: usage?.input ?? 0, output: usage?.output ?? 0,
+				requests: session?.requests ?? 0, ttft: session?.ttft ?? null, tps: ms > 0 ? Math.round((tokens / ms) * 1000 * 10) / 10 : null,
+			};
+		}));
+		const since = now - 86_400_000;
+		const finished = entries.filter((x) => x.step.ended !== null && x.step.ended >= since);
+		return {
+			...metrics.snapshot(),
+			usage: factory.usage(),
+			agents: {
+				running: live.length,
+				queued,
+				max: factory.deps.config.maxParallel,
+				done24h: finished.filter((x) => x.step.status === "done").length,
+				failed24h: finished.filter((x) => x.step.status === "failed").length,
+			},
+			steps,
+		};
+	};
+
 	/** One ticket with its run folder files and its steps' usage so far, or null. */
 	const ticketDetail = async (ticketId: string) => {
 		const ticket = await factory.ticket(ticketId);
@@ -368,10 +408,17 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 			else res.end();
 		});
 	});
+	const metrics = new Metrics();
+	const unwatch = factory.throttle.watch((use) => metrics.use(use));
+	server.on("close", () => {
+		metrics.stop();
+		unwatch();
+	});
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
 		server.listen(dash.port, dash.host, () => resolve());
 	});
+	metrics.start();
 	const address = server.address();
 	const port = typeof address === "object" && address !== null ? address.port : dash.port;
 	// Where clients on this machine reach it: listening on every address includes loopback.

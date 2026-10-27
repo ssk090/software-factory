@@ -103,6 +103,25 @@ describe("server", { timeout: 60_000 }, () => {
 		assert.equal((await post("/api/tickets/T-9/pause", {})).status, 409, "a stopped ticket cannot pause");
 	});
 
+	it("reports CPU, agents and model use for the Performance page", async () => {
+		const res = await fetch(`${url}/api/performance`);
+		assert.equal(res.status, 200);
+		const perf = await res.json();
+		assert.ok(perf.now.cores >= 1);
+		assert.equal(perf.now.load.length, 3);
+		assert.ok(perf.now.memTotal > 0);
+		assert.ok(perf.points.length >= 1, "the sampler keeps points for the graph");
+		assert.ok(perf.usage.today.total.requests >= 1);
+		assert.ok(perf.agents.max >= 1);
+		assert.ok(perf.agents.done24h >= 1 || perf.agents.failed24h >= 1);
+		assert.ok(perf.summary.ttft.count >= 1, "the first-token time was recorded");
+		const code = perf.steps.find((s: { name: string }) => s.name === "code-1-1");
+		assert.ok(code, "the step is listed");
+		assert.ok(code.ms >= 0);
+		assert.ok(code.requests >= 1, "its requests are counted by session");
+		assert.ok(code.tps === null || typeof code.tps === "number");
+	});
+
 	it("shows the ticket's branch against the base, from its own worktree", async () => {
 		const res = await fetch(`${url}/api/tickets/T-9/changes`);
 		assert.equal(res.status, 200);
