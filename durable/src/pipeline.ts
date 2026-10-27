@@ -12,6 +12,7 @@
 // Effects outside the session are made safe to repeat: tracker statuses and pushes are idempotent,
 // the PR is looked up before it is created, and comments are memoized before they are posted (a
 // crash in between loses a comment rather than posting it twice).
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -41,7 +42,7 @@ import { formatUnneeded, keptOnPurpose, notInPlan, unneededFiles } from "./scope
 import { formatFindings, redact, scanBranch } from "./secrets.ts";
 import type { GitHost, InlineComment } from "./github.ts";
 import { askJev, describe, startIndex } from "./jev.ts";
-import { family, type Lanes, modelName, parseModel, pickModel, plannedModels, withOverrides } from "./lanes.ts";
+import { chain, family, type Lanes, modelName, parseModel, pickModel, plannedModels, withOverrides } from "./lanes.ts";
 import { buildPrompt, hasRole, STEP_EXTENSIONS } from "./roles.ts";
 import { steFaults, steRoles } from "./ste.ts";
 import { TicketGone, type Tracker } from "./tracker.ts";
@@ -504,28 +505,44 @@ export function createPipeline(deps: PipelineDeps) {
 	 * verify <round>: the factory runs VERIFY_CMD itself and does not take an agent's word. Round 1 is
 	 * the untouched base branch. When that already fails, the gate only reports.
 	 */
-	const verify = async (ticket: Ticket, round: number, baselineRed: boolean, context: Context, logName = `verify-${round}.log`): Promise<{ ok: boolean; killed: boolean; tail: string }> => {
-		if (!config.verifyCmd) return { ok: true, killed: false, tail: "" };
-		const code = await exec(ticket, await verifyCommand(), logName, context);
+	const verify = async (ticket: Ticket, round: number, baselineRed: boolean, context: Context, logName = `verify-${round}.log`, retry = 0): Promise<{ ok: boolean; killed: boolean; tail: string; retried: boolean }> => {
+		if (!config.verifyCmd) return { ok: true, killed: false, tail: "", retried: false };
+		const runOnce = async () => {
+			const code = await exec(ticket, await verifyCommand(), logName, context);
+			const text = await readText(join(ticket.run!, logName));
+			const tailText = text.split("\n").slice(-120).join("\n");
+			// Killed (out of memory, SIGKILL) is no result at all: never a red base, and not the code's fault.
+			return { code, text, tail: tailText, killed: code !== 0 && KILLED.test(tailText) };
+		};
+		let result = await runOnce();
+		let retried = false;
+		// A check that fails once and passes on a retry is flaky: it must not send the coder back, and the
+		// coordinator hears only about the failures that stay. A killed run has no result, so no retry.
+		if (result.code !== 0 && !result.killed && retry > 0) {
+			retried = true;
+			const first = result;
+			result = await runOnce();
+			const head = `[factory] VERIFY_CMD failed once (exit ${first.code}). Its last lines:\n${first.text.split("\n").slice(-60).join("\n")}\n\n[factory] the retry:\n`;
+			await writeFile(join(ticket.run!, logName), `${head}${result.text}`);
+			result.tail = (await readText(join(ticket.run!, logName))).split("\n").slice(-120).join("\n");
+		}
+		const ok = result.code === 0;
 		const failed = join(ticket.run!, "verify-failed.md");
-		const log = (await readText(join(ticket.run!, logName))).split("\n");
-		const tail = log.slice(-120).join("\n");		// Killed (out of memory, SIGKILL) is no result at all: never a red base, and not the code's fault.
-		const killed = code !== 0 && KILLED.test(tail);
 		// The branch's failure is always a file, even when the base already fails: the reviewer must see
 		// what this ticket broke, next to the failure that was there before it.
-		if (code === 0 || killed || round === 1) await rm(failed, { force: true });
+		if (ok || result.killed || round === 1) await rm(failed, { force: true });
 		else {
 			const fenced = (text: string) => `\`\`\`\n${text}\n\`\`\``;
 			const base = baselineRed ? (await readText(join(ticket.run!, "verify-1.log"))).split("\n").slice(-80).join("\n").trim() : "";
 			const lines = [
-				`The factory ran VERIFY_CMD (${config.verifyCmd}) on HEAD ${(await head(ticket.worktree!)).slice(0, 12)} and it failed (exit ${code}). Last lines:`,
+				`The factory ran VERIFY_CMD (${config.verifyCmd}) on HEAD ${(await head(ticket.worktree!)).slice(0, 12)} and it failed (exit ${result.code}). Last lines:`,
 				"",
-				fenced(log.slice(-80).join("\n")),
+				fenced(result.tail.split("\n").slice(-80).join("\n")),
 			];
 			if (baselineRed) lines.push("", `The same command also fails on ${config.base} before this ticket (verify-1.log). A failure that ${config.base} does not have, such as a new failing test or a new type error, is this ticket's bug: the reviewer counts it as a P1. Last lines on ${config.base}:`, "", base === "" ? "(no output)" : fenced(base));
 			await writeFile(failed, `${lines.join("\n")}\n`);
 		}
-		return { ok: code === 0, killed, tail };
+		return { ok, killed: result.killed, tail: result.tail, retried };
 	};
 	const KILLED_HELP = `give the sandbox more memory (SANDBOX_ARGS="--memory 8g", and Docker's own memory limit) or lower the check's parallelism, then Run again`;
 	/** VERIFY_CMD, or the way to run it that the coordinator found fits this machine. */
@@ -591,6 +608,7 @@ export function createPipeline(deps: PipelineDeps) {
 			const record: StepRecord = {
 				name, role, round, attempt, model: modelName(model), conversationId: conversation.id, taskId: task.id,
 				status: "running", started: Date.now(), ended: null, error: null, sessionId, pausedMs: 0, usage: null, headBefore: now,
+				lane: chain(withOverrides(lanes, ticket.models), role).map(modelName),
 			};
 			await editTicket(tx, ticket.id, (t) => {
 				t.steps.push(record);
@@ -613,7 +631,7 @@ export function createPipeline(deps: PipelineDeps) {
 		const name = `${step.role}-${step.round}-${step.attempt}`;
 		const handle = await runtime.conversation(step.conversationId as ConversationId, context);
 		if (handle === undefined) throw new Blocked(`the conversation of step ${name} is gone`);
-		const prompt = await buildPrompt({
+		const { prompt, skills } = await buildPrompt({
 			here: config.here, role: step.role, round: step.round, cid: ticket.cid, branch, base: config.base, run, worktree, pr: ticket.pr,
 			verifyCmd: config.verifyCmd, portBase: config.cellPortStart + (ticket.slot ?? 0) * config.cellPortSpan,
 			portSpan: config.cellPortSpan, repoSkillDirs: config.repoSkillDirs, skillsPath: config.skillsPath,
@@ -623,6 +641,15 @@ export function createPipeline(deps: PipelineDeps) {
 			backendBase: config.backendBase,
 			log: (line) => log(ticket, line),
 		});
+		// What the step got, for the scoreboard: a prompt or model change is then a different attempt.
+		const promptHash = createHash("sha256").update(prompt).digest("hex").slice(0, 12);
+		await runtime.commit(async (tx) => {
+			await editTicket(tx, ticket.id, (t) => {
+				const record = t.steps.find((s) => s.name === name);
+				if (record !== undefined) Object.assign(record, { promptHash, skills });
+			});
+			return undefined;
+		}, context);
 		const submission = await handle.submit({ type: "input", content: prompt, requestId: `step:${name}` }, context);
 		// AGENT_TIMEOUT counts the step's own time: time the ticket spent paused moves the deadline.
 		let timedOut = false;
@@ -1176,11 +1203,7 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		"verify-base": async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
-			let { ok, killed, tail } = await verify(ticket, 1, false, context);
-			// A red base turns the gate off for the whole run, so it takes two failures: one flaky failure
-			// must not do it. A killed run is no result at all, so it is never run again here.
-			const flaky = !ok && !killed;
-			if (flaky) ({ ok, killed, tail } = await verify(ticket, 1, false, context));
+			const { ok, killed, tail, retried } = await verify(ticket, 1, false, context, "verify-1.log", 1);
 			// Killed (out of memory): the coordinator finds a way to run the same check that fits.
 			if (killed && (await canRepair(task, "verify-base"))) {
 				throw new Repairable("killed", `VERIFY_CMD was killed on ${config.base} (out of memory or SIGKILL)`, `$ ${await verifyCommand()}\n${tail}`);
@@ -1191,7 +1214,7 @@ export function createPipeline(deps: PipelineDeps) {
 			await advance(task, runtime, context, { phase: "test", baselineRed: red }, (t) => {
 				if (!config.verifyCmd) return;
 				t.verify.push({ round: 1, ok, log: "verify-1.log" });
-				addEvent(t, ok ? { kind: "verify", text: flaky ? `VERIFY_CMD failed once on ${config.base} and passed on the second run (verify-1.log): the gate stays on` : `VERIFY_CMD passes on ${config.base}` }
+				addEvent(t, ok ? { kind: "verify", text: retried ? `VERIFY_CMD failed once on ${config.base} and passed on the second run (verify-1.log): the gate stays on` : `VERIFY_CMD passes on ${config.base}` }
 					: killed ? { kind: "verify", level: "warn", text: `VERIFY_CMD was killed on ${config.base} (out of memory or SIGKILL, verify-1.log): no result, so the gate stays on. To fix: ${KILLED_HELP}` }
 					: { kind: "verify", level: "warn", text: `${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block` });
 			});
@@ -1237,13 +1260,13 @@ export function createPipeline(deps: PipelineDeps) {
 			const ticket = await ticketOf(task, runtime, context);
 			const cp = task.state.checkpoint;
 			const round = cp.round === 1 ? 2 : 3;
-			const { ok, killed, tail } = await verify(ticket, round, cp.baselineRed, context);
+			const { ok, killed, tail, retried } = await verify(ticket, round, cp.baselineRed, context, `verify-${round}.log`, 1);
 			if (killed && (await canRepair(task, "verify-code"))) throw new Repairable("killed", `VERIFY_CMD was killed (out of memory or SIGKILL, verify-${round}.log)`, `$ ${await verifyCommand()}\n${tail}`);
 			if (killed) throw new Blocked(`VERIFY_CMD was killed (out of memory or SIGKILL, verify-${round}.log): ${KILLED_HELP}`);
 			const record = (t: Ticket) => {
 				if (!config.verifyCmd) return;
 				t.verify.push({ round, ok, log: `verify-${round}.log` });
-				addEvent(t, { kind: "verify", level: ok ? "info" : cp.baselineRed ? "warn" : "error", text: `VERIFY_CMD ${ok ? "passes" : "fails"} after the coder's ${cp.round === 1 ? "first" : "second"} try (verify-${round}.log)` });
+				addEvent(t, { kind: "verify", level: ok ? "info" : cp.baselineRed ? "warn" : "error", text: `VERIFY_CMD ${ok ? "passes" : "fails"}${retried && ok ? " (flaky: it failed once)" : ""} after the coder's ${cp.round === 1 ? "first" : "second"} try (verify-${round}.log)` });
 			};
 			if (ok || cp.baselineRed) {
 				await advance(task, runtime, context, { phase: "docs", round: 1 }, record);
@@ -1304,7 +1327,7 @@ export function createPipeline(deps: PipelineDeps) {
 			}
 			const moved = !/Already up to date/i.test(merged.stdout);
 			// The base's own changes can break this branch: the check runs on the merge.
-			const { ok, killed, tail } = await verify(ticket, 0, task.state.checkpoint.baselineRed, context, "verify-sync.log");
+			const { ok, killed, tail } = await verify(ticket, 0, task.state.checkpoint.baselineRed, context, "verify-sync.log", 1);
 			if (killed && (await canRepair(task, "sync-base"))) throw new Repairable("killed", "VERIFY_CMD was killed after the base merge (out of memory or SIGKILL)", `$ ${await verifyCommand()}\n${tail}`);
 			if (killed) throw new Blocked(`VERIFY_CMD was killed after the base merge (out of memory or SIGKILL, verify-sync.log): ${KILLED_HELP}`);
 			if (!ok && !task.state.checkpoint.baselineRed) throw new Repairable("verify", "VERIFY_CMD fails after the base merge (verify-sync.log)", `$ ${await verifyCommand()}\n${tail}`);
@@ -1392,11 +1415,11 @@ export function createPipeline(deps: PipelineDeps) {
 			await onBranch(ticket, "fixer");
 			await keptTests(ticket, task.state.checkpoint.frozen, "fixer");
 			// A failure goes to the next reviewer as verify-failed.md, who must count it as a P1.
-			const { ok } = await verify(ticket, 3 + round, task.state.checkpoint.baselineRed, context);
+			const { ok, retried } = await verify(ticket, 3 + round, task.state.checkpoint.baselineRed, context, `verify-${3 + round}.log`, 1);
 			await advance(task, runtime, context, { phase: "push-fix", step: null, fixed: true }, (t) => {
 				if (!config.verifyCmd) return;
 				t.verify.push({ round: 3 + round, ok, log: `verify-${3 + round}.log` });
-				addEvent(t, { kind: "verify", level: ok ? "info" : "warn", text: `VERIFY_CMD ${ok ? "passes" : "fails"} after fix ${round} (verify-${3 + round}.log)` });
+				addEvent(t, { kind: "verify", level: ok ? "info" : "warn", text: `VERIFY_CMD ${ok ? "passes" : "fails"}${retried && ok ? " (flaky: it failed once)" : ""} after fix ${round} (verify-${3 + round}.log)` });
 			});
 		},
 		"push-fix": async (task, runtime, context) => {

@@ -27,6 +27,7 @@ import { containerName, dockerEnv, type EnvFactory, nodeEnvWith, reapOrphans, re
 import { cellEnv, git, gitIdentity, removeWorktree, useOriginUrl } from "./git.ts";
 import type { GitHost } from "./github.ts";
 import { chain, type Lanes, modelName, parseModel, plannedModels, roles, saveLanes, setModel } from "./lanes.ts";
+import { learn } from "./lessons.ts";
 import { createPipeline, duration, type PipelineInput, sumUsage } from "./pipeline.ts";
 import { FactoryAgent } from "./roles.ts";
 import { createSentrySync, mergeSync, type SentryApi, ticketFor } from "./sentry.ts";
@@ -68,6 +69,29 @@ export type HostDeps = {
 
 export type StartOptions = { gate?: boolean; build?: boolean; fresh?: boolean; autoApprove?: boolean; pickModels?: boolean };
 
+/** The factory's own quality numbers, over every ticket it ran. */
+export type Scoreboard = {
+	tickets: number;
+	judged: number;
+	avgScore: number | null;
+	criteriaMet: number;
+	criteriaTotal: number;
+	/** Reviews to the last PASS, averaged over the runs that got one. */
+	reviewRounds: number | null;
+	repairs: number;
+	verifyFailures: number;
+	humanComments: number;
+	humanRework: number;
+	cost: number;
+	ms: number;
+	rows: {
+		cid: string; title: string; state: string;
+		judge: number | null; met: number; criteria: number;
+		reviews: number; pass: boolean; repairs: number; verifies: number; human: number; rework: boolean;
+		cost: number; ms: number;
+	}[];
+};
+
 /** The pause reason the factory sets when the daily budget runs out; it continues them when it is back. */
 const BUDGET = "daily budget";
 
@@ -82,7 +106,9 @@ export class Factory {
 	private readonly lock: string | null;
 	private budgetTimer: ReturnType<typeof setInterval> | null = null;
 	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-	/** Provider session id -> ticket id, for the throttle (filled as steps are looked up). */
+	private feedbackTimer: ReturnType<typeof setInterval> | null = null;
+	/** When the last human-feedback sweep ran (POLL_INTERVAL between sweeps). */
+	private feedbackAt = 0;	/** Provider session id -> ticket id, for the throttle (filled as steps are looked up). */
 	private readonly sessions = new Map<string, string>();
 
 	private constructor(harness: Harness, root: Conversation, deps: HostDeps, Pipeline: Factory["Pipeline"], lock: string | null, throttle: Throttle, wake: (ticketId?: string) => void) {
@@ -163,6 +189,9 @@ export class Factory {
 			const watched = factory;
 			watched.budgetTimer = setInterval(() => void watched.watchBudget().catch((e) => log(`budget: ${e instanceof Error ? e.message : e}`)), 15_000);
 			watched.budgetTimer.unref();
+			// Once a minute: if a served PR merged or closed, read what people said and learn from it.
+			watched.feedbackTimer = setInterval(() => void watched.checkHumanFeedback().catch((e) => log(`feedback: ${e instanceof Error ? e.message : e}`)), 60_000);
+			watched.feedbackTimer.unref();
 		}
 		return factory;
 	}
@@ -473,6 +502,40 @@ export class Factory {
 		return (await this.ticket(ticketId))!;
 	}
 
+	/**
+	 * Read the PR's review and comment bodies once it is merged or closed, and turn what people said
+	 * into lessons for the agents that change code. One sweep per POLL_INTERVAL; an open PR waits.
+	 */
+	async checkHumanFeedback(): Promise<void> {
+		const { config } = this.deps;
+		const now = Date.now();
+		if (now - this.feedbackAt < config.pollSeconds * 1000) return;
+		this.feedbackAt = now;
+		const factoryBody = /^(?:PR ready for human review|PR \(draft\):|Judge:)/;
+		const noise = /^(?:lgtm|looks good|approved|thanks|nice|great)\b/i;
+		for (const ticket of await this.tickets()) {
+			if (ticket.state !== "in_review" || ticket.pr === null || ticket.worktree === null) continue;
+			if (ticket.human?.state === "MERGED" || ticket.human?.state === "CLOSED") continue;
+			if (ticket.human?.at !== undefined && now - ticket.human.at < config.pollSeconds * 1000) continue;
+			const feedback = await this.deps.gitHost.feedback(ticket.worktree, ticket.pr).catch(() => null);
+			if (feedback === null) continue;
+			// The factory's own bodies (the report, the judge, each review file) are not people.
+			const comments = feedback.comments
+				.map((body) => body.replace(/\s+/g, " ").trim())
+				.filter((body) => body.length >= 12 && !factoryBody.test(body) && !noise.test(body) && !/^VERDICT: (?:PASS|FIX)$/m.test(body))
+				.map((body) => body.slice(0, 240))
+				.slice(0, 5);
+			// The factory's HEAD against the branch's head after the merge: did people change the code?
+			const factoryHead = ticket.steps.findLast((s) => s.headAfter !== undefined)?.headAfter ?? null;
+			const reworked = feedback.head !== null && factoryHead !== null && feedback.head !== factoryHead;
+			await this.edit(ticket.id, (t) => {
+				t.human = { at: Date.now(), state: feedback.state, comments, reworked };
+				addEvent(t, { kind: "lesson", text: feedback.state === "OPEN" ? "PR still open: human feedback is not read yet" : `Human feedback read from the ${feedback.state} PR: ${comments.length === 0 ? "no comments" : `${comments.length} comment(s)`}${reworked ? ", and people changed the branch after the factory" : ""}` });
+			});
+			for (const comment of comments) await learn(config.stateDir, `Human review: ${comment}`, ticket.cid);
+		}
+	}
+
 	/** Every 15 s: pause running tickets when the budget runs out; continue them when it is back. */
 	private async watchBudget(): Promise<void> {
 		const reached = this.throttle.budgetReached();
@@ -498,6 +561,47 @@ export class Factory {
 	/** Model use: today's spend and limits, and what is waiting. */
 	usage(): ThrottleStatus {
 		return this.throttle.status();
+	}
+
+	/** The factory's quality numbers: judge scores, criteria, review rounds, repairs, checks, cost and time. */
+	async scoreboard(): Promise<Scoreboard> {
+		const tickets = await this.tickets();
+		const rows = tickets.filter((t) => t.steps.length > 0).map((t) => {
+			// The full report lands with the judge's own output (issue #26); an older ticket has only the score.
+			const judged = t.judge as { score: number; summary: string; criteria?: { status: string }[] } | null;
+			const criteria = judged?.criteria ?? [];
+			const met = criteria.filter((c) => c.status === "met").length;
+			const cost = t.steps.reduce((sum, s) => sum + (s.usage?.cost ?? 0), 0);
+			const ms = t.steps.reduce((sum, s) => sum + Math.max(0, (s.ended ?? Date.now()) - s.started - (s.pausedMs ?? 0)), 0);
+			return {
+				cid: t.cid, title: t.title, state: t.state,
+				judge: judged?.score ?? null, met, criteria: criteria.length,
+				reviews: t.reviews.length, pass: t.reviews.at(-1)?.verdict === "PASS",
+				repairs: t.events.filter((e) => e.kind === "repair").length,
+				verifies: t.verify.filter((v) => !v.ok).length,
+				human: t.human?.comments.length ?? 0,
+				rework: t.human?.reworked === true,
+				cost, ms,
+			};
+		});
+		const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+		const judged = rows.filter((r) => r.judge !== null);
+		const passed = rows.filter((r) => r.pass && r.reviews > 0);
+		return {
+			tickets: rows.length,
+			judged: judged.length,
+			avgScore: judged.length === 0 ? null : sum(judged.map((r) => r.judge!)) / judged.length,
+			criteriaMet: sum(rows.map((r) => r.met)),
+			criteriaTotal: sum(rows.map((r) => r.criteria)),
+			reviewRounds: passed.length === 0 ? null : sum(passed.map((r) => r.reviews)) / passed.length,
+			repairs: sum(rows.map((r) => r.repairs)),
+			verifyFailures: sum(rows.map((r) => r.verifies)),
+			humanComments: sum(rows.map((r) => r.human)),
+			humanRework: rows.filter((r) => r.rework).length,
+			cost: sum(rows.map((r) => r.cost)),
+			ms: sum(rows.map((r) => r.ms)),
+			rows,
+		};
 	}
 
 	/** What a step's model requests used so far (its conversation's pi.usage). */
@@ -640,7 +744,7 @@ export class Factory {
 	async close(): Promise<void> {
 		if (this.budgetTimer !== null) clearInterval(this.budgetTimer);
 		if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
-		await this.harness.close(context);
+		if (this.feedbackTimer !== null) clearInterval(this.feedbackTimer);		await this.harness.close(context);
 		await this.throttle.flush();
 		if (this.lock !== null) await rm(this.lock, { force: true });
 	}

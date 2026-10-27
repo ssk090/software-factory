@@ -106,7 +106,7 @@ export async function buildPrompt(options: {
 	backends?: readonly { name: string; path: string }[];
 	backendBase?: string;
 	log: (line: string) => void;
-}): Promise<string> {
+}): Promise<{ prompt: string; skills: string[] }> {
 	const { header, body } = await readAgentFile(options.here, options.role);
 	const ticketMd = await readFile(join(options.run, "ticket.md"), "utf8").catch(() => "");
 	const skills = await deliverSkills({
@@ -123,11 +123,12 @@ export async function buildPrompt(options: {
 	const backendLine = backends.length === 0 ? "" : `
 Backend repos: ${backends.map((b) => `${b.name}=${b.path}`).join(" ")}. Each is a worktree on branch ${options.branch}, cut from origin/${options.backendBase}. Read them when the ticket touches an API, a DTO, a message or the database. A reader only reads them. A writer changes a backend repo only when plan.md names it on a Repos: line, and commits there on the same branch. When one listed repo is a git submodule of another, change it in its own worktree, never inside the submodule. The factory pushes each changed repo and opens its PR.
 `;
-	return `${body.trim()}
+	const prompt = `${body.trim()}
 ${skills}${ste}${options.lessons ?? ""}${backendLine}
 Isolation: you are one of several agents working on different tickets at the same time, each in its own git worktree. Work only in your cwd (this ticket's worktree on branch ${options.branch}) and RUN_DIR. Do not read or change other worktrees. Do not use git stash (one stash is shared by every worktree), and do not create, switch, move or delete branches or tags: a git hook refuses it. A server or container you start must use ports PORT_BASE to PORT_BASE+${options.portSpan - 1} (PORT_BASE=${options.portBase}, PORT is set to it) and the compose project in COMPOSE_PROJECT_NAME, and you must stop it before you finish.
 
 Context: RUN_DIR=${options.run} TICKET=${options.cid} BASE=origin/${options.base} ROUND=${options.round} PR=${options.pr ?? "none yet"} VERIFY_CMD=${options.verifyCmd || "<none, use the repo documented checks>"}.${options.index ? ` Before walking files, search the code index: ff index search "<what you need>" answers with path:line hits (--k N for more, ff index map for the repo map).` : ""} Do your job now.`;
+	return { prompt, skills: stepSkills(header, ticketMd) };
 }
 
 /** Roles that exist: an agent file in agents/ (deleting docs.md turns the docs writer off). */

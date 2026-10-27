@@ -789,6 +789,50 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("learns from the people who reviewed the merged PR, and scores the run", async () => {
+		const w = await world();
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-74", { gate: false });
+			const t = await settle(factory, "T-74");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			const code = t.steps.find((s) => s.name === "code-1-1")!;
+			assert.ok(code.lane?.includes("faux/faux-1"), "the step records its lane");
+			assert.ok((code.skills ?? []).length > 0, "the step records its skills");
+			assert.match(code.promptHash ?? "", /^[0-9a-f]{12}$/);
+			w.gitHost.prFeedback.set(t.pr!, { state: "MERGED", comments: ["Please use the existing helper in utils.", "thanks, looks good to me", "VERDICT: PASS"] });
+			await factory.checkHumanFeedback();
+			const after = (await factory.ticket("T-74"))!;
+			assert.deepEqual(after.human?.comments, ["Please use the existing helper in utils."]);
+			assert.match(await readLessons(w.config.stateDir, "code"), /Human review: Please use the existing helper in utils\./);
+			const board = await factory.scoreboard();
+			assert.equal(board.judged, 1);
+			assert.equal(board.avgScore, 4);
+			assert.equal(board.rows[0]?.human, 1);
+			assert.equal(board.rows[0]?.pass, true);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("retries a failed check once and reports a flaky pass", async () => {
+		// The base has no file.txt, so the base check passes. The coder's file.txt makes the first check fail; the
+		// marker it leaves makes the retry pass.
+		const w = await world({}, async (root) => ({ VERIFY_CMD: `test ! -f file.txt || test -f ${root}/flaky || { touch ${root}/flaky; false; }` }));
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-73", { gate: false });
+			const t = await settle(factory, "T-73");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.deepEqual(t.steps.filter((s) => s.role === "code").map((s) => s.name), ["code-1-1"], "the coder did not need a second try");
+			assert.ok(t.events.some((e) => e.text === "VERIFY_CMD passes (flaky: it failed once) after the coder's first try (verify-2.log)"));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);

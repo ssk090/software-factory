@@ -29,6 +29,12 @@ export type StepRecord = {
 	headAfter?: string;
 	/** What the step's model requests used, from the conversation's pi.usage (once it ended). */
 	usage?: StepUsage | null;
+	/** A hash of the prompt the step got: a prompt change shows as a new hash. */
+	promptHash?: string;
+	/** The skills the step was offered (its agent file and the ticket). */
+	skills?: string[];
+	/** The role's model chain when the step started (lanes.json and the ticket's own choice). */
+	lane?: string[];
 };
 
 export type StepUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; tokens: number; cost: number };
@@ -127,7 +133,8 @@ export type Ticket = {
 	attachedApproval?: number | null;
 	/** The approval (its time) whose note the spec writer and the planner applied. */
 	noteApplied?: number | null;
-	/** The tracker no longer has the ticket (deleted): a run cannot go on until it is back or replaced. */
+	/** What people said on the PR after the run (read once the PR is merged or closed). */
+	human?: { at: number; state: "OPEN" | "MERGED" | "CLOSED"; comments: string[]; reworked?: boolean } | null;	/** The tracker no longer has the ticket (deleted): a run cannot go on until it is back or replaced. */
 	gone?: boolean;
 	/** Paused: the pipeline holds at its next phase and its model requests wait. `reason`: "you" or the budget. */
 	paused: { at: number; reason: string } | null;
