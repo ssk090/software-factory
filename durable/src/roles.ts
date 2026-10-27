@@ -12,7 +12,7 @@ import { deliverSkills, readAgentFile, stepSkills } from "./skills.ts";
 import { steBlock, stePrompt, steRoles } from "./ste.ts";
 
 /** Agents that only read the repo: they write only into the run folder, and must not commit. */
-export const READERS = new Set(["spec", "plan", "review", "judge", "runtime"]);
+export const READERS = new Set(["spec", "plan", "review", "judge", "runtime", "pr-summary"]);
 
 const FILE_TOOLS = new Set(["read", "write", "edit"]);
 /** Only the factory pushes, and only to the ticket's branch. */

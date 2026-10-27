@@ -173,6 +173,12 @@ export type Behaviour = {
 	coderGivesUp?: string;
 	/** The coder also commits a change in this backend repo (its worktree comes from the Context line). */
 	coderBackend?: string;
+	/** Extra bash for the reviewer before it answers (e.g. an uncommitted change in the worktree). */
+	reviewBash?: string;
+	/** Extra bash for the docs writer before it answers (e.g. deleting a frozen test). */
+	docsBash?: string;
+	/** Extra bash for the PR summary writer before it answers (e.g. an uncommitted change in the worktree). */
+	summaryBash?: string;
 };
 
 /**
@@ -255,13 +261,15 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 			}
 			return bash(`echo ok > fixed.txt && git add fixed.txt && git commit -qm "fix: the pre-push check" && ${report("The pre-push check wanted fixed.txt; added it.", "Run the pre-push checks before you finish.")}`);
 		}
-		if (prompt.includes("# Agent: docs writer")) return write(`${run}/docs.md`, "No docs change needed\n");
+		if (prompt.includes("# Agent: docs writer")) return behaviour.docsBash
+			? bash(`${behaviour.docsBash}; printf 'No docs change needed\\n' > ${run}/docs.md`)
+			: write(`${run}/docs.md`, "No docs change needed\n");
 		if (prompt.includes("# Agent: runtime checker")) return write(`${run}/runtime.md`, "Checked the form in the browser.\nVERDICT: PASS\n");
-		if (prompt.includes("# Agent: PR summary")) return bash(`echo "title ${round}" > ${run}/pr-title.txt && echo body > ${run}/pr-body.md`);
+		if (prompt.includes("# Agent: PR summary")) return bash(`${behaviour.summaryBash ? `${behaviour.summaryBash}; ` : ""}echo "title ${round}" > ${run}/pr-title.txt && echo body > ${run}/pr-body.md`);
 		if (prompt.includes("# Agent: code reviewer")) {
 			// Round 1 also leaves an inline comment with a one-click suggestion (and one malformed entry the factory drops).
 			const inline = round === 1 ? JSON.stringify([{ path: "file.txt", line: 1, body: "🔴 issue (blocking): **x**\n\n```suggestion\nfix\n```" }, { path: "file.txt" }]) : "[]";
-			return bash(`printf '%s' '${inline}' > ${run}/review-${round}.comments.json && printf 'P1 x\nVERDICT: %s\n' ${round === 1 ? "FIX" : "PASS"} > ${run}/review-${round}.md`);
+			return bash(`${behaviour.reviewBash ? `${behaviour.reviewBash}; ` : ""}printf '%s' '${inline}' > ${run}/review-${round}.comments.json && printf 'P1 x\nVERDICT: %s\n' ${round === 1 ? "FIX" : "PASS"} > ${run}/review-${round}.md`);
 		}
 		if (prompt.includes("# Agent: fixer")) return bash(`echo fix >> file.txt && git commit -qam "fix"`);
 		if (prompt.includes("# Agent: judge")) {
