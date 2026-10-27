@@ -35,6 +35,8 @@ export type Config = {
 	readonly statuses: Statuses;
 	readonly specGate: boolean;
 	readonly maxReviewRounds: number;
+	/** A judge score below this keeps the PR a draft (JUDGE_MIN_SCORE, 0: no score gate). */
+	readonly judgeMinScore: number;
 	readonly maxParallel: number;
 	readonly slots: number;
 	readonly cellPortStart: number;
@@ -152,6 +154,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		},
 		specGate: flag(env.SPEC_GATE, true),
 		maxReviewRounds: Math.max(1, num(env.MAX_REVIEW_ROUNDS, 2, "MAX_REVIEW_ROUNDS")),
+		judgeMinScore: num(env.JUDGE_MIN_SCORE, 3, "JUDGE_MIN_SCORE"),
 		maxParallel: Math.max(1, num(env.MAX_PARALLEL, 1, "MAX_PARALLEL")),
 		slots: Math.max(1, num(env.SLOTS, 8, "SLOTS")),
 		cellPortStart: num(env.CELL_PORT_START, 20000, "CELL_PORT_START"),

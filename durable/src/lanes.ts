@@ -1,6 +1,6 @@
 // Which model each agent role runs on: an ordered chain per role, preferred first (durable/lanes.json).
-// A step whose model fails moves to the next model in its chain. The reviewer and the judge never use
-// the coder's model family, so code is never graded by its author.
+// A step whose model fails moves to the next model in its chain. The reviewer never uses the
+// coder's model family, and the judge never uses the reviewer's, so code is not graded by its author.
 import { readFile, rename, writeFile } from "node:fs/promises";
 import type { Models } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
@@ -70,7 +70,7 @@ export function chain(lanes: Lanes, role: string): ModelRef[] {
 
 /**
  * The model for a step's attempt N (1-based): the Nth usable entry of its chain. Usable: known to
- * pi-ai, with a login (an API key), and not the coder's family for review and judge.
+ * pi-ai, with a login (an API key), and not the family that wrote or reviewed the code.
  */
 export async function pickModel(options: {
 	lanes: Lanes;

@@ -31,7 +31,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { backendCache, type BackendPr, backendsDir, backendTree, commitsAhead, plannedRepos, prepareBackend, pushBackend, uncommitted } from "./backends.ts";
 import type { Config } from "./config.ts";
-import { addEvent, type Revision, StepDoc, type StepRecord, type StepUsage, type Ticket, TicketDoc, type TicketEvent, TicketIndex } from "./docs.ts";
+import { addEvent, type JudgeReport, type Revision, StepDoc, type StepRecord, type StepUsage, type Ticket, TicketDoc, type TicketEvent, TicketIndex } from "./docs.ts";
 import { containerName, type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
 import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, run, testsKept, writeGuardHooks } from "./git.ts";
 import { indexScope, loadIndexOptions } from "./index/options.ts";
@@ -233,6 +233,30 @@ const RUN_OUTPUTS = [
 
 /** A line that marks a P1 or P2 finding: a finding line, a heading, a table row, or a severity emoji. */
 const BLOCKING = /^\s*(?:[|>]\s*|[-*+]\s|\d+\.\s|#+\s*)*(?:\*\*)?(?:🚨|🔴|🟡|P1\b|P2\b)/u;
+
+const asText = (value: unknown) => (typeof value === "string" ? value : "");
+const asList = (value: unknown): Record<string, unknown>[] =>
+	Array.isArray(value) ? value.filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null) : [];
+const asStrings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
+
+/** The judge's report with every list filled in, or null when it holds no score. */
+function judgeReport(raw: unknown): JudgeReport | null {
+	if (typeof raw !== "object" || raw === null) return null;
+	const r = raw as Record<string, unknown>;
+	if (typeof r.score !== "number") return null;
+	return {
+		score: r.score,
+		summary: asText(r.summary),
+		criteria: asList(r.criteria).map((c) => ({ id: asText(c.id), text: asText(c.text), status: asText(c.status), evidence: asText(c.evidence) })),
+		specGaps: asStrings(r.spec_gaps),
+		hallucinations: asList(r.hallucinations).map((h) => ({ claim: asText(h.claim), where: asText(h.where), why: asText(h.why) })),
+		outOfScope: asStrings(r.out_of_scope),
+		promptSuggestions: asList(r.prompt_suggestions).map((p) => ({ agent: asText(p.agent), problem: asText(p.problem), suggestion: asText(p.suggestion) })),
+	};
+}
+
+/** judge.json without a Markdown code fence, when the model wrapped it. */
+const unfence = (text: string) => /^\s*```(?:json)?\s*\n([\s\S]*?)\n```\s*$/.exec(text)?.[1] ?? text;
 
 export function createPipeline(deps: PipelineDeps) {
 	const { config, tracker, gitHost, lanes, models } = deps;
@@ -526,7 +550,11 @@ export function createPipeline(deps: PipelineDeps) {
 		const earlier = ticket.steps.filter((s) => s.role === role && s.round === round);
 		const attempt = earlier.length + 1;
 		const coder = ticket.steps.findLast((s) => s.role === "code" && s.status === "done");
-		const avoid = (role === "review" || role === "judge") && coder ? family(parseModel(coder.model)!) : null;
+		const reviewer = ticket.steps.findLast((s) => s.role === "review" && s.status === "done");
+		// The reviewer stays off the coder's family, and the judge stays off the reviewer's: the judge
+		// does not grade the work of the model that just reviewed it.
+		const avoid = role === "judge" ? (reviewer ? family(parseModel(reviewer.model)!) : coder ? family(parseModel(coder.model)!) : null)
+			: role === "review" && coder ? family(parseModel(coder.model)!) : null;
 		// A model that failed this step in this run is skipped; a later run tries it again.
 		const failed = new Set(earlier.filter((s) => s.status === "failed" && s.taskId === task.id).map((s) => s.model));
 		const skip = (m: ModelRef) => (failed.has(modelName(m)) ? "failed earlier in this step" : null);
@@ -1322,45 +1350,61 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		judge: async (task, runtime, context) => {
 			// Best effort: a failed judge is logged and the ticket carries on.
-			let judge: Ticket["judge"] = null;
+			let judge: JudgeReport | null = null;
 			let ticket: Ticket | null = null;
+			let skipped = "";
 			try {
 				if (!(await runAgent(task, runtime, context, "judge", 1))) return;
 				ticket = await ticketOf(task, runtime, context);
-				const parsed = JSON.parse(await readText(join(ticket.run!, "judge.json"))) as { score?: unknown; summary?: unknown; criteria?: { status?: string }[]; hallucinations?: unknown[] };
-				if (typeof parsed.score === "number") {
-					judge = { score: parsed.score, summary: typeof parsed.summary === "string" ? parsed.summary : "" };
-					const met = (parsed.criteria ?? []).filter((c) => c.status === "met").length;
-					const text = `Judge: ${parsed.score}/5. ${judge.summary}\nCriteria met: ${met}/${(parsed.criteria ?? []).length}. Hallucinations: ${(parsed.hallucinations ?? []).length}.\n`;
+				const report = judgeReport(JSON.parse(unfence(await readText(join(ticket.run!, "judge.json")))));
+				if (report !== null) {
+					judge = report;
+					const met = report.criteria.filter((c) => c.status === "met").length;
+					const text = `Judge: ${report.score}/5. ${report.summary}\nCriteria met: ${met}/${report.criteria.length}. Hallucinations: ${report.hallucinations.length}.\n`;
 					await writeFile(join(ticket.run!, "judge.txt"), text);
+					// A prompt fix becomes a lesson for the role it names, so the next run reads it.
+					for (const s of report.promptSuggestions) if (s.suggestion.trim() !== "") await learn(config.stateDir, `${s.agent}: ${s.suggestion}`, ticket.cid);
 					if ((await runtime.memo<boolean>("pr-comment:judge", context)) === undefined) {
 						await runtime.memo("pr-comment:judge", true, context);
 						await gitHost.comment(ticket.worktree!, ticket.pr!, await scrub(runtime, context, ticket, "the judge's comment", text)).catch(() => undefined);
 					}
 				}
 			} catch (error) {
-				if (error instanceof Blocked) deps.log(`judge skipped: ${error.message}`);
-				else if (!(error instanceof SyntaxError)) throw error;
+				if (error instanceof Blocked) skipped = error.message;
+				else if (error instanceof SyntaxError) skipped = `judge.json is not valid JSON: ${error.message}`;
+				else throw error;
 			}
+			if (skipped !== "") deps.log(`judge skipped: ${skipped}`);
 			// A dirty worktree is not a failed judge: the ticket stops, the same as every other reader.
 			if (ticket !== null) await readOnly(ticket, task.state.checkpoint.stepHead, "judge");
 			await advance(task, runtime, context, { phase: "report", step: null }, (t) => {
 				t.judge = judge;
-				addEvent(t, judge ? { kind: "review", text: `Judge: ${judge.score}/5. ${judge.summary}`.slice(0, 400) } : { kind: "review", level: "warn", text: "Judge skipped (best effort)" });
+				addEvent(t, judge ? { kind: "review", text: `Judge: ${judge.score}/5. ${judge.summary}`.slice(0, 400) } : { kind: "review", level: "warn", text: `Judge skipped (best effort${skipped === "" ? "" : `: ${skipped.slice(0, 300)}`})` });
 			});
 		},
 		report: async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
-			const pass = task.state.checkpoint.verdict === "PASS";
-			const graded = ticket.judge ? ` Judge score: ${ticket.judge.score}/5.` : "";
+			const judged = ticket.judge;
+			const unmet = judged?.criteria.filter((c) => c.status === "not_met") ?? [];
+			// The judge can keep the PR a draft: an unmet criterion or a low score is not a pass.
+			const why = task.state.checkpoint.verdict !== "PASS"
+				? `AI review still has P1/P2 findings after ${config.maxReviewRounds} rounds.`
+				: unmet.length > 0
+					? `The judge found ${unmet.length} acceptance criterion(s) not met: ${unmet.map((c) => c.id || c.text).join(", ")}.`
+					: judged !== null && judged.score < config.judgeMinScore
+						? `The judge scored the run ${judged.score}/5, below JUDGE_MIN_SCORE=${config.judgeMinScore}.`
+						: "";
+			const pass = why === "";
+			const graded = judged ? ` Judge score: ${judged.score}/5.` : "";
 			if (pass) await gitHost.ready(ticket.worktree!, ticket.pr!).catch(() => undefined);
 			await commentOnce(runtime, context, ticket, "report", pass
 				? `PR ready for human review: ${ticket.pr}\nAI review passed (no P1/P2).${graded}`
-				: `PR (draft): ${ticket.pr}\nAI review still has P1/P2 findings after ${config.maxReviewRounds} rounds. Needs a human. See PR comments.${graded}`);
+				: `PR (draft): ${ticket.pr}\n${why} Needs a human. See PR comments.${graded}`);
 			await setStatus(runtime, context, ticket, config.statuses.inReview);
 			await finish(task, runtime, context, { outcome: pass ? "in_review" : "draft", pr: ticket.pr, reason: null }, (t) => {
 				t.state = "in_review";
 				t.phase = "report";
+				if (!pass) addEvent(t, { kind: "review", level: "warn", text: `PR stays a draft: ${why}` });
 			});
 		},
 	};

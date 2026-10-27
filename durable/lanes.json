@@ -1,5 +1,5 @@
 {
-  "_help": "Which model each agent role runs on: \"<provider>/<model>\" from pi-ai's catalog, preferred first. A step whose model fails (after the provider's own retries) moves to the next entry. Entries without a login (the provider's API key, e.g. ANTHROPIC_API_KEY) are skipped. review and judge never use the coder's model family. aliases: roles that share another role's chain. coordinate: the coordinator, called when a check fails or a push is refused, on Sonnet 5.5 first.",
+  "_help": "Which model each agent role runs on: \"<provider>/<model>\" from pi-ai's catalog, preferred first. A step whose model fails (after the provider's own retries) moves to the next entry. Entries without a login (the provider's API key, e.g. ANTHROPIC_API_KEY) are skipped. review does not use the coder's model family and the judge does not use the reviewer's. aliases: roles that share another role's chain. coordinate: the coordinator, called when a check fails or a push is refused, on Sonnet 5.5 first.",
   "lanes": {
     "spec": [
       "anthropic/claude-opus-5-5",
@@ -13,6 +13,10 @@
     "review": [
       "openai/gpt-6.1-sol",
       "anthropic/claude-opus-5-5"
+    ],
+    "judge": [
+      "anthropic/claude-opus-5-5",
+      "openai/gpt-6.1-sol"
     ],
     "coordinate": [
       "anthropic/claude-sonnet-5-5",
@@ -28,7 +32,6 @@
     "test": "code",
     "docs": "code",
     "fix": "code",
-    "judge": "review",
     "runtime": "review"
   }
 }
