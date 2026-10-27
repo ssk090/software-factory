@@ -17,13 +17,16 @@
     "coordinate": [
       "anthropic/claude-sonnet-5-5",
       "anthropic/claude-opus-5-5"
+    ],
+    "pr-summary": [
+      "anthropic/claude-haiku-5-5",
+      "anthropic/claude-sonnet-5-5"
     ]
   },
   "aliases": {
     "plan": "spec",
     "test": "code",
     "docs": "code",
-    "pr-summary": "code",
     "fix": "code",
     "judge": "review",
     "runtime": "review"
