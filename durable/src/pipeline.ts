@@ -231,6 +231,9 @@ const RUN_OUTPUTS = [
 	"pr-body.md", "judge.json", "judge.txt", "verify-failed.md", "guard.log", "runtime.md", "test-red.log",
 ];
 
+/** A line that marks a P1 or P2 finding: a finding line, a heading, a table row, or a severity emoji. */
+const BLOCKING = /^\s*(?:[|>]\s*|[-*+]\s|\d+\.\s|#+\s*)*(?:\*\*)?(?:🚨|🔴|🟡|P1\b|P2\b)/u;
+
 export function createPipeline(deps: PipelineDeps) {
 	const { config, tracker, gitHost, lanes, models } = deps;
 	const gatePollMs = deps.gatePollMs ?? 5000;
@@ -1241,7 +1244,7 @@ export function createPipeline(deps: PipelineDeps) {
 				t.pr = pr;
 			});
 		},
-		review: async (task, runtime, context) => {
+			review: async (task, runtime, context) => {
 			const round = task.state.checkpoint.round;
 			if (!(await runAgent(task, runtime, context, "review", round))) return;
 			const ticket = await ticketOf(task, runtime, context);
@@ -1249,7 +1252,15 @@ export function createPipeline(deps: PipelineDeps) {
 			const file = `review-${round}.md`;
 			const review = await readText(join(ticket.run!, file));
 			if (review.trim() === "") throw new Blocked(`reviewer wrote no ${file}`);
-			const verdict = /^VERDICT: (PASS|FIX)$/m.exec(review.split("\n").filter((l) => /^VERDICT: (PASS|FIX)$/.test(l)).at(-1) ?? "")?.[1] === "PASS" ? "PASS" : "FIX";
+			// The verdict is the last line, and a P1 or P2 in the body wins over it: a model can write PASS
+			// under a finding it just made.
+			const lastLine = review.split("\n").map((l) => l.trim()).filter((l) => l !== "").at(-1) ?? "";
+			const declared = /^VERDICT: (PASS|FIX)$/.exec(lastLine)?.[1] ?? null;
+			const blocking = review.split("\n").find((l) => BLOCKING.test(l))?.trim() ?? null;
+			const verdict = declared === "PASS" && blocking === null ? "PASS" : "FIX";
+			const conflict = declared === "PASS" && blocking !== null
+				? `the VERDICT line says PASS, but this finding is P1 or P2: ${blocking.slice(0, 200)}`
+				: declared === null ? `the last line is not VERDICT: PASS or VERDICT: FIX: ${lastLine.slice(0, 200)}` : null;
 			const inline = await inlineComments(join(ticket.run!, `review-${round}.comments.json`));
 			let posted = "";
 			if ((await runtime.memo<boolean>(`pr-comment:review-${round}`, context)) === undefined) {
@@ -1261,6 +1272,7 @@ export function createPipeline(deps: PipelineDeps) {
 				t.reviews.push({ round, verdict, file });
 				const end = verdict === "FIX" && last ? ` (no rounds left: MAX_REVIEW_ROUNDS=${config.maxReviewRounds})` : "";
 				addEvent(t, { kind: "review", level: verdict === "PASS" ? "info" : "warn", text: `Review ${round}: ${verdict}${end}; posted on the PR${posted}` });
+				if (conflict !== null) addEvent(t, { kind: "review", level: "warn", text: `Review ${round}: ${conflict}` });
 			});
 		},
 		fix: async (task, runtime, context) => {
