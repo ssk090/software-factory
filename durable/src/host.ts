@@ -2,7 +2,7 @@
 // everything in it (examples 06-harness, 13-recovery, 31-reload-and-restart): the ticket pipelines,
 // their agent steps, the Sentry sync and the tracker pickup. Opening it resumes all of them where the
 // last process stopped. Other clients (the CLI, the dashboard) talk to this process, never to the file.
-import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
@@ -689,25 +689,58 @@ function createPickup(config: Config, tracker: Tracker, log: (line: string) => v
 	});
 }
 
-/** state/factory.pid: refuse to open a session another live process owns. */
-async function takeLock(path: string): Promise<string> {
+const alive = (pid: number): boolean => {
 	try {
-		const pid = Number((await readFile(path, "utf8")).trim());
-		if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
-			try {
-				process.kill(pid, 0);
-				throw new Error(`another factory (pid ${pid}) owns ${path.replace(/factory\.pid$/, "factory.sqlite")}: talk to it (ff status), or stop it first`);
-			} catch (error) {
-				if (error instanceof Error && error.message.startsWith("another factory")) throw error;
-			}
-		}
+		process.kill(pid, 0);
+		return true;
 	} catch (error) {
-		if (error instanceof Error && error.message.startsWith("another factory")) throw error;
+		// EPERM: the process is there, it belongs to another user.
+		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
-	const handle = await open(path, "w");
-	await handle.writeFile(String(process.pid));
-	await handle.close();
-	return path;
+};
+
+/**
+ * state/factory.pid: one process owns the session. The whole file is written under a temporary name
+ * and linked into place: the link is atomic and fails when another owner linked first, so two starts
+ * cannot both pass a check and then both write. A pid from a dead process is taken over.
+ */
+async function takeLock(path: string): Promise<string> {
+	const tmp = `${path}.${process.pid}`;
+	await writeFile(tmp, String(process.pid));
+	try {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				await link(tmp, path);
+				return path;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			}
+			const pid = Number((await readFile(path, "utf8").catch(() => "")).trim());
+			if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && alive(pid)) {
+				throw new Error(`another factory (pid ${pid}) owns ${path.replace(/factory\.pid$/, "factory.sqlite")}: talk to it (ff status), or stop it first`);
+			}
+			// It looks stale. Claim it with an atomic rename, so only one process removes it.
+			const claimed = `${path}.stale.${process.pid}.${attempt}`;
+			try {
+				await rename(path, claimed);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw error;
+			}
+			const now = Number((await readFile(claimed, "utf8").catch(() => "")).trim());
+			if (now !== pid) {
+				// A live owner linked between the read and the rename: give its file back and look again.
+				await link(claimed, path).catch(() => undefined);
+				await rm(claimed, { force: true });
+				continue;
+			}
+			// No live owner: a crash left the file, or its owner died. Take it over.
+			await rm(claimed, { force: true });
+		}
+		throw new Error(`could not take ${path}: another process keeps taking it`);
+	} finally {
+		await rm(tmp, { force: true });
+	}
 }
 
 export const _test = { takeLock, writeFile, BUDGET };
