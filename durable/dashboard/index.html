@@ -512,6 +512,7 @@
       <button data-tab="sprint" title="My sprint"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg><span class="label">My sprint</span><span id="n-sprint" class="count muted"></span></button>
       <button data-tab="runs" title="Factory runs"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg><span class="label">Factory runs</span><span id="n-runs" class="count muted"></span></button>
       <button data-tab="perf" title="Performance"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span class="label">Performance</span><span id="n-perf" class="count muted"></span></button>
+      <button data-tab="settings" title="Settings"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg><span class="label">Settings</span></button>
     </nav>
     <div class="sidebar-foot">
       <div class="meter" id="meter" title="Model spend today, across every API key">
@@ -547,6 +548,11 @@
     <section class="card" id="tab-runs" hidden>
       <div class="bar"><h2>Factory runs</h2><span class="grow"></span><input type="text" id="run-ref" placeholder="Ticket key, id or URL" style="width:260px"><button class="act primary" id="run-start">Plan spec</button><span class="auto-switch"></span></div>
       <table><thead><tr><th>Ticket</th><th>State</th><th>Phase</th><th>Step</th><th>PR</th><th>Updated</th><th></th></tr></thead><tbody id="run-rows"></tbody></table>
+    </section>
+    <section class="card" id="tab-settings" hidden>
+      <div class="bar"><h2>Models for each agent</h2><span class="grow"></span><span class="muted">A change applies to the next step that starts. Saved to lanes.json.</span></div>
+      <div id="settings-note" class="muted"></div>
+      <table><thead><tr><th>Agent</th><th>Model (first choice)</th><th>Fallbacks</th><th></th></tr></thead><tbody id="settings-rows"></tbody></table>
     </section>
     <div id="tab-perf" hidden>
       <div class="bar"><h2>Performance</h2><span class="chip" id="perf-health">idle</span><span class="grow"></span><span id="perf-note" class="muted"></span>
@@ -677,11 +683,63 @@ let tab = "sentry";
 for (const b of document.querySelectorAll("#tabs button")) b.addEventListener("click", () => {
   tab = b.dataset.tab;
   for (const x of document.querySelectorAll("#tabs button")) x.classList.toggle("on", x === b);
-  for (const name of ["sentry", "sprint", "runs", "perf"]) $(`tab-${name}`).hidden = name !== tab;
+  for (const name of ["sentry", "sprint", "runs", "perf", "settings"]) $(`tab-${name}`).hidden = name !== tab;
   replay($(`tab-${tab}`), "view-in");
   if (tab === "sprint") loadSprint(false);
   if (tab === "perf") loadPerf();
+  if (tab === "settings") loadSettings();
 });
+
+// ---- Settings: the model for each agent role (lanes.json) ----
+let lanesData = null;
+const getLanes = async (fresh) => (lanesData = fresh || !lanesData ? await api("/api/lanes") : lanesData);
+const modelSelect = (current, label, change, extra = []) => el("select", { "aria-label": label, onchange: (e) => change(e.target.value) },
+  ...extra, ...lanesData.catalog.map((m) => el("option", { value: m.id, selected: m.id === current, disabled: !m.login && m.id !== current }, m.login ? m.id : `${m.id} (no login for ${m.id.split("/")[0]})`)));
+const laneOf = (d, role) => d.lanes[role] || d.lanes[d.aliases[role]] || [];
+const fam = (id) => (id || "").split("/").pop().split(/[-.]/)[0].toLowerCase();
+async function loadSettings() {
+  try { await getLanes(true); } catch (e) { $("settings-note").textContent = e.message; return; }
+  drawSettings();
+}
+function drawSettings() {
+  const d = lanesData;
+  const coder = fam(laneOf(d, "code")[0]);
+  $("settings-rows").replaceChildren(...d.roles.map((role) => {
+    const chain = laneOf(d, role), alias = d.aliases[role];
+    const warn = (role === "review" || role === "judge") && fam(chain[0]) === coder ? el("div", { class: "error" }, `Same model family as the coder (${coder}): the run skips it while another family has a login.`) : null;
+    const set = (body, done) => act(document.activeElement, async () => { lanesData = await api("/api/lanes", body); drawSettings(); flash(done); });
+    return el("tr", {},
+      el("td", {}, role, alias ? el("div", { class: "where muted" }, `same as ${alias}`) : null),
+      el("td", {}, modelSelect(chain[0], `Model for ${role}`, (model) => set({ role, model }, `${role} now starts on ${model}`)), warn),
+      el("td", { class: "muted" }, chain.slice(1).join(", ") || "none"),
+      el("td", {}, !alias && ROLE_DEFAULT[role] ? el("button", { class: "act sm", onclick: () => set({ role, reset: ROLE_DEFAULT[role] }, `${role} is the same as ${ROLE_DEFAULT[role]} again`) }, `Reset to ${ROLE_DEFAULT[role]}`) : null));
+  }));
+}
+// The lane an alias role comes from in the shipped lanes.json.
+const ROLE_DEFAULT = { plan: "spec", test: "code", docs: "code", fix: "code", judge: "review", runtime: "review" };
+
+// A ticket's models: Jev's routing, your choices, and a switch to change them.
+const modelsOpen = new Set();
+async function modelsCard(t) {
+  const box = el("div", { class: "approve" }, el("h3", {}, "Models"), el("div", { class: "muted" }, "Loading..."));
+  Promise.all([api(`/api/tickets/${t.id}/models`), getLanes(false)]).then(([m]) => {
+    const waiting = t.phase === "models" && m.pickModels && !m.chosen && isLive(t);
+    const open = waiting || modelsOpen.has(t.id);
+    const why = m.route?.jev ? `Jev: ${m.route.jev}, so each chain starts at entry ${m.route.start}.` : "Default models (no Jev routing for this ticket).";
+    const rows = m.planned.map((p) => el("tr", {}, el("td", {}, p.role),
+      el("td", {}, open
+        ? modelSelect(m.overrides[p.role] || p.model, `Model for ${p.role}`, (v) => act(document.activeElement, async () => { await api(`/api/tickets/${t.id}/models`, v === "" ? { role: p.role, model: null } : { role: p.role, model: v }); lastSig = ""; drawDetail(true); }),
+          m.overrides[p.role] ? [el("option", { value: "" }, "Back to the default")] : [])
+        : p.model || "none"),
+      el("td", { class: "muted" }, p.source === "you" ? "yours" : p.source)));
+    box.replaceChildren(el("div", { class: "bar" }, el("h3", {}, "Models"), el("span", { class: "grow" }),
+      waiting ? null : switchEl(open, "Change models", (on) => { if (on) modelsOpen.add(t.id); else modelsOpen.delete(t.id); lastSig = ""; drawDetail(true); })),
+      el("p", { class: "muted" }, why, waiting ? " The run waits for you: change a model or keep the defaults, then continue." : ""),
+      el("table", {}, el("tbody", {}, ...rows)),
+      waiting ? el("div", { class: "bar", style: "margin-top:8px" }, el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { await api(`/api/tickets/${t.id}/models`, { confirm: true }); flash(`${t.cid} continues with these models`); }) }, "Use these models")) : null);
+  }, (e) => box.replaceChildren(el("div", { class: "error" }, e.message)));
+  return box;
+}
 
 // ---- Sentry ----
 let overview = null;
@@ -734,7 +792,7 @@ function drawSprint() {
     const f = overview?.tickets.find((x) => x.id === t.id) || t.factory;
     const live = f && (f.state === "running" || f.state === "queued" || f.state === "waiting_approval");
     const actions = [];
-    if (!live) actions.push(el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { await api(`/api/tickets/${t.id}/start`, { gate: true, autoApprove }); openTicket(t.id); }) }, autoApprove ? "Run end to end" : f ? "Plan again" : "Plan spec"));
+    if (!live) actions.push(el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { await api(`/api/tickets/${t.id}/start`, { gate: true, autoApprove, pickModels }); openTicket(t.id); }) }, autoApprove ? "Run end to end" : f ? "Plan again" : "Plan spec"));
     if (f) actions.push(" ", el("button", { class: "act", onclick: () => openTicket(t.id) }, "Open"));
     return enterRow("sprint", t.id, el("tr", {},
       el("td", {}, link(t.url, t.cid), " ", t.title, t.list ? el("div", { class: "muted" }, t.list) : null),
@@ -791,7 +849,7 @@ function removeTicket(button, t) {
     flash(r.worktree ? `${t.cid} removed; its worktree is deleted (the branch stays)` : `${t.cid} removed from the list`);
   });
 }
-$("run-start").addEventListener("click", (e) => act(e.target, async () => { const ref = $("run-ref").value.trim(); if (!ref) throw new Error("enter a ticket"); const r = await api(`/api/tickets/${encodeURIComponent(ref)}/start`, { gate: true, autoApprove }); openTicket(r.ticketId); }));
+$("run-start").addEventListener("click", (e) => act(e.target, async () => { const ref = $("run-ref").value.trim(); if (!ref) throw new Error("enter a ticket"); const r = await api(`/api/tickets/${encodeURIComponent(ref)}/start`, { gate: true, autoApprove, pickModels }); openTicket(r.ticketId); }));
 
 // ---- Performance: CPU, memory, agents, tokens and first-token time, from /api/performance ----
 let perf = null, perfEvery = 5000, perfTimer = null, perfDrawFrame = 0, perfWidth = 0;
@@ -955,11 +1013,13 @@ let detailTab = "timeline", logLevel = "all", logKind = "all", logQuery = "", de
 const AUTO_HELP = "Approve the spec and plan automatically, so the run goes from the ticket to the PR without waiting for you";
 let autoApprove = false;
 try { autoApprove = localStorage.getItem("sf.autoApprove") === "1"; } catch { /* storage is optional */ }
-function switchEl(on, text, change) {
+function switchEl(on, text, change, title = AUTO_HELP) {
   const button = el("button", { type: "button", role: "switch", "aria-checked": String(on), "aria-label": text });
   button.addEventListener("click", () => change(button.getAttribute("aria-checked") !== "true", button));
-  return el("label", { class: "switch", title: AUTO_HELP }, button, el("span", {}, text));
+  return el("label", { class: "switch", title }, button, el("span", {}, text));
 }
+let pickModels = false;
+try { pickModels = localStorage.getItem("sf.pickModels") === "1"; } catch { /* storage is optional */ }
 function drawAutoSwitches() {
   for (const slot of document.querySelectorAll(".auto-switch")) slot.replaceChildren(switchEl(autoApprove, "Auto-approve spec and plan", (on) => {
     autoApprove = on;
@@ -967,6 +1027,11 @@ function drawAutoSwitches() {
     drawAutoSwitches();
     drawSprint();
   }));
+  for (const slot of document.querySelectorAll(".auto-switch")) slot.append(switchEl(pickModels, "Choose models", (on) => {
+    pickModels = on;
+    try { localStorage.setItem("sf.pickModels", on ? "1" : "0"); } catch { /* storage is optional */ }
+    drawAutoSwitches();
+  }, "Hold each run at Select models, so you can change the model of each agent before the spec is written"));
   $("run-start").textContent = autoApprove ? "Run end to end" : "Plan spec";
 }
 drawAutoSwitches();
@@ -1274,7 +1339,7 @@ async function drawDetail(force, pushed) {
     // (Tickets blocked before the gone flag existed say so in their reason; the server checks with ClickUp anyway.)
     const gone = t.gone || /ITEM_013|not found|deleted/i.test(t.blocked || "");
     if (gone && t.source) buttons.append(el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { const r = await api(`/api/sentry/${t.source.issueId}/fix`, {}); flash(`new ClickUp ticket for ${t.source.shortId}`); await openTicket(r.ticketId); }) }, "New ClickUp ticket"));
-    buttons.append(el("button", { class: "act", onclick: post("start", { gate: true, autoApprove }) }, "Run again"), el("button", { class: "act", onclick: post("start", { gate: true, fresh: true, autoApprove }) }, "Start fresh"),
+    buttons.append(el("button", { class: "act", onclick: post("start", { gate: true, autoApprove, pickModels }) }, "Run again"), el("button", { class: "act", onclick: post("start", { gate: true, fresh: true, autoApprove, pickModels }) }, "Start fresh"),
       el("button", { class: "act", title: REMOVE_HELP, onclick: (e) => removeTicket(e.target, t) }, "Remove"));
   }
   const used = steps.reduce((a, s) => ({ tokens: a.tokens + (s.usage?.tokens || 0), cost: a.cost + (s.usage?.cost || 0) }), { tokens: 0, cost: 0 });
@@ -1302,7 +1367,7 @@ async function drawDetail(force, pushed) {
   box.push(el("div", { class: "seg", role: "tablist" }, ...tabs.map(([key, name, n]) => el("button", { role: "tab", "aria-selected": String(detailTab === key), class: detailTab === key ? "on" : "", onclick: () => { if (detailTab === key) return; detailTab = key; lastSig = ""; if (key === "changes") loadChanges(); drawDetail(false).then(() => { const view = $("detail-view"); if (view) replay(view, "view-in"); }); } }, name, n === null ? null : el("span", { class: "n" }, n)))));
   const view = el("div", { id: "detail-view" });
   if (detailTab === "timeline") {
-    view.append(stagesView(t), timeline(t, data.phases || []));
+    view.append(await modelsCard(t), stagesView(t), timeline(t, data.phases || []));
     view.append(el("h3", {}, "Live"), el("div", { id: "live", class: "live" }, el("span", { class: "muted" }, "Pick a step.")));
     const step = runningStep(t);
     if (step) {

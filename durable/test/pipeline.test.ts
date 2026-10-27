@@ -520,7 +520,7 @@ describe("pipeline", { timeout: 600_000 }, () => {
 			const texts = t.events.map((e) => e.text);
 			assert.match(texts[0]!, /^Run started/);
 			const phases = t.events.filter((e) => e.kind === "phase").map((e) => e.phase);
-			assert.deepEqual(phases.slice(0, 6), ["admit", "fetch", "worktree", "spec", "plan", "post-spec"]);
+			assert.deepEqual(phases.slice(0, 7), ["admit", "fetch", "models", "worktree", "spec", "plan", "post-spec"]);
 			assert.ok(texts.some((x) => /^Paused by you; code-1-1 finishes its current request, then waits/.test(x)), texts.join("\n"));
 			assert.ok(texts.some((x) => /^Continued by you after \d/.test(x)));
 			assert.ok(texts.some((x) => /^code-1-1 done in /.test(x)));

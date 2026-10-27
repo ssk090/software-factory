@@ -40,7 +40,8 @@ import { learn, learnedVerify, learnVerify, readLessons } from "./lessons.ts";
 import { formatUnneeded, keptOnPurpose, notInPlan, unneededFiles } from "./scope.ts";
 import { formatFindings, redact, scanBranch } from "./secrets.ts";
 import type { GitHost, InlineComment } from "./github.ts";
-import { family, type Lanes, modelName, pickModel } from "./lanes.ts";
+import { askJev, describe, startIndex } from "./jev.ts";
+import { family, type Lanes, modelName, pickModel, plannedModels, withOverrides } from "./lanes.ts";
 import { buildPrompt, hasRole, STEP_EXTENSIONS } from "./roles.ts";
 import { steFaults, steRoles } from "./ste.ts";
 import { TicketGone, type Tracker } from "./tracker.ts";
@@ -72,7 +73,7 @@ export type PipelineInput = {
 
 type Step = { role: string; round: number; attempt: number; conversationId: number; model: string; started: number };
 type Phase =
-	| "start" | "admit" | "fetch" | "worktree" | "spec" | "plan" | "post-spec" | "gate" | "setup" | "verify-base"
+	| "start" | "admit" | "fetch" | "models" | "worktree" | "spec" | "plan" | "post-spec" | "gate" | "setup" | "verify-base"
 	| "test" | "code" | "verify-code" | "docs" | "runtime" | "pr-summary" | "pr" | "review" | "fix" | "push-fix" | "pr-summary-2" | "judge" | "report";
 export type Checkpoint = {
 	phase: Phase;
@@ -102,6 +103,7 @@ export const PHASES: readonly { phase: Phase; label: string }[] = [
 	{ phase: "start", label: "Start" },
 	{ phase: "admit", label: "Wait for a free slot" },
 	{ phase: "fetch", label: "Fetch the ticket" },
+	{ phase: "models", label: "Select models" },
 	{ phase: "worktree", label: "Prepare the worktree" },
 	{ phase: "spec", label: "Write the spec" },
 	{ phase: "plan", label: "Plan" },
@@ -222,7 +224,7 @@ const OUTPUTS: Record<string, (round: number) => string[]> = {
 	coordinate: (round) => [`repair-${round}.md`, "blocked.md"],
 };
 /** Phases every run goes through before it continues where the last one stopped. */
-const SETUP_PHASES = new Set<Phase>(["start", "admit", "fetch", "worktree"]);
+const SETUP_PHASES = new Set<Phase>(["start", "admit", "fetch", "models", "worktree"]);
 /** Everything a fresh run removes from the run folder. */
 const RUN_OUTPUTS = [
 	"spec.md", "plan.md", "tests.md", "test-changes.md", "blocked.md", "docs.md", "fix-notes.md", "pr-title.txt",
@@ -514,10 +516,13 @@ export function createPipeline(deps: PipelineDeps) {
 		// A model that failed this step in this run is skipped; a later run tries it again.
 		const failed = new Set(earlier.filter((s) => s.status === "failed" && s.taskId === task.id).map((s) => s.model));
 		const skip = (m: ModelRef) => (failed.has(modelName(m)) ? "failed earlier in this step" : null);
-		let { model, skipped } = await pickModel({ lanes, models, role, attempt: 1, avoidFamily: avoid, skip });
+		// Your model for this role on this ticket comes first. Else the chain starts where Jev pointed.
+		const own = ticket.models?.[role] !== undefined;
+		const route = { lanes: withOverrides(lanes, ticket.models), models, role, attempt: 1, skip, start: own ? 0 : (ticket.route?.start ?? 0) };
+		let { model, skipped } = await pickModel({ ...route, avoidFamily: avoid });
 		if (model === null && avoid !== null) {
 			// No other model family has a login: a reviewer of the coder's family beats no review.
-			const same = await pickModel({ lanes, models, role, attempt: 1, avoidFamily: null, skip });
+			const same = await pickModel({ ...route, avoidFamily: null });
 			if (same.model !== null) {
 				model = same.model;
 				skipped = [...skipped, `no other model family has a login, so ${modelName(same.model)} reviews code of its own family (${avoid})`];
@@ -866,6 +871,33 @@ export function createPipeline(deps: PipelineDeps) {
 			const { ticket: md, comments } = await tracker.fetch(ticket.id);
 			await writeFile(join(ticket.run!, "ticket.md"), md);
 			await writeFile(join(ticket.run!, "comments.md"), comments);
+			await advance(task, runtime, context, { phase: "models", polls: 0 });
+		},
+		models: async (task, runtime, context) => {
+			// Jev routes the ticket once a run. Then, with "Choose models" on, the run waits for you.
+			let ticket = await ticketOf(task, runtime, context);
+			const polls = task.state.checkpoint.polls;
+			if (polls === 0) {
+				const answers = await askJev(`${ticket.title}\n\n${await readText(join(ticket.run!, "ticket.md"))}`);
+				const start = startIndex(answers);
+				const planned = await plannedModels({ lanes, models, overrides: ticket.models, start });
+				const list = planned.map((p) => `${p.role} ${p.model ?? "none"}${p.source === "you" ? " (yours)" : ""}`).join(", ");
+				const jev = answers === null ? null : describe(answers);
+				await runtime.commit(async (tx) => {
+					await editTicket(tx, ticket.id, (t) => {
+						t.route = { start, jev };
+						addEvent(t, { kind: "models", text: `${jev === null ? "Default models (no Jev)" : `Jev: ${jev}, so each chain starts at entry ${start}`}. ${list}` });
+					});
+					return undefined;
+				}, context);
+				await appendFile(join(ticket.run!, "route.log"), `${new Date().toISOString()} models: ${jev ?? "no Jev"}, start ${start}: ${list}\n`);
+				ticket = await ticketOf(task, runtime, context);
+			}
+			if (ticket.pickModels === true && ticket.modelsChosen !== true) {
+				await advance(task, runtime, context, { polls: polls + 1 });
+				await nap(gatePollMs, runtime.signal, ticket.id);
+				return;
+			}
 			await advance(task, runtime, context, { phase: "worktree" });
 		},
 		worktree: async (task, runtime, context) => {

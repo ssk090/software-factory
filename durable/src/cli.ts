@@ -60,10 +60,12 @@ function fail(message: string): never {
 }
 
 function deps(config: Config, extra: Partial<HostDeps> = {}): Promise<HostDeps> {
-	return loadLanes(process.env.LANES_FILE || join(config.here, "durable", "lanes.json")).then((lanes) => ({
+	const lanesFile = process.env.LANES_FILE || join(config.here, "durable", "lanes.json");
+	return loadLanes(lanesFile).then((lanes) => ({
 		config,
 		models: builtinModels(),
 		lanes,
+		lanesFile,
 		tracker: new ClickUp(config),
 		gitHost: new GitHubCli(),
 		sentry: config.sentry.token && config.sentry.org ? new SentryClient(config.sentry) : null,
