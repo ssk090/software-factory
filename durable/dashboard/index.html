@@ -293,6 +293,15 @@
   @keyframes tick-in { from { opacity: 0; transform: translateY(3px); } }
   @keyframes rise { 0% { opacity: 0; transform: translateY(5px); } 35% { opacity: 1; transform: translateY(0); } 100% { opacity: 1; transform: translate(4px, -4px); } }
 
+  /* Auto-approve: a switch (shadcn Switch) */
+  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; user-select: none; white-space: nowrap; }
+  .switch button { position: relative; width: 32px; height: 18px; padding: 0; flex: none; border: 1px solid transparent; border-radius: 999px; background: var(--input, var(--border)); cursor: pointer; transition: background-color 0.15s; }
+  .switch button::after { content: ""; position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--background); box-shadow: 0 1px 2px rgb(0 0 0 / 0.2); transition: transform 0.15s; }
+  .switch button[aria-checked="true"] { background: var(--primary); }
+  .switch button[aria-checked="true"]::after { transform: translateX(14px); }
+  .switch button:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: 2px; }
+  .switch button:disabled { opacity: 0.5; cursor: default; }
+
   /* Live preview: a file the agent is writing, as it writes it */
   .doc-live { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; padding: 8px 12px; border: 1px solid color-mix(in oklch, var(--info) 40%, var(--border)); border-radius: var(--radius-md); background: color-mix(in oklch, var(--info) 8%, transparent); font-size: 13px; }
   .doc-live.idle { border-color: var(--border); background: var(--muted); color: var(--muted-foreground); }
@@ -504,12 +513,12 @@
       <table><thead><tr><th>Fix first</th><th>Issue</th><th class="num">Events</th><th class="num">Users</th><th>Last seen</th><th>Level</th><th></th></tr></thead><tbody id="sentry-rows"></tbody></table>
     </section>
     <section class="card" id="tab-sprint" hidden>
-      <div class="bar"><h2 id="sprint-title">My sprint (ClickUp)</h2><span class="grow"></span><button class="act" id="sprint-refresh">Refresh</button></div>
+      <div class="bar"><h2 id="sprint-title">My sprint (ClickUp)</h2><span class="grow"></span><span class="auto-switch"></span><button class="act" id="sprint-refresh">Refresh</button></div>
       <div id="sprint-note" class="muted"></div>
       <table><thead><tr><th>Task</th><th>ClickUp status</th><th>Priority</th><th>Due</th><th>Factory</th><th></th></tr></thead><tbody id="sprint-rows"></tbody></table>
     </section>
     <section class="card" id="tab-runs" hidden>
-      <div class="bar"><h2>Factory runs</h2><span class="grow"></span><input type="text" id="run-ref" placeholder="Ticket key, id or URL" style="width:260px"><button class="act primary" id="run-start">Plan spec</button></div>
+      <div class="bar"><h2>Factory runs</h2><span class="grow"></span><input type="text" id="run-ref" placeholder="Ticket key, id or URL" style="width:260px"><button class="act primary" id="run-start">Plan spec</button><span class="auto-switch"></span></div>
       <table><thead><tr><th>Ticket</th><th>State</th><th>Phase</th><th>Step</th><th>PR</th><th>Updated</th><th></th></tr></thead><tbody id="run-rows"></tbody></table>
     </section>
   </div>
@@ -662,7 +671,7 @@ function drawSprint() {
   if (!sprint) return;
   if (sprint.error) { $("sprint-note").textContent = sprint.error; $("sprint-note").className = "error"; $("sprint-rows").replaceChildren(); return; }
   $("sprint-title").textContent = `My sprint: ${sprint.sprint.name}`;
-  $("sprint-note").textContent = `${sprint.tasks.length} tasks assigned to you. Plan spec runs the spec writer and planner; you approve the spec here, then the factory builds it.`;
+  $("sprint-note").textContent = `${sprint.tasks.length} tasks assigned to you. Plan spec runs the spec writer and planner; you approve the spec here, then the factory builds it. With auto-approve on, the spec is approved by itself and the run goes on to the PR.`;
   $("sprint-note").className = "muted";
   $("n-sprint").textContent = String(sprint.tasks.length);
   setStat("stat-sprint", String(sprint.tasks.length));
@@ -670,7 +679,7 @@ function drawSprint() {
     const f = overview?.tickets.find((x) => x.id === t.id) || t.factory;
     const live = f && (f.state === "running" || f.state === "queued" || f.state === "waiting_approval");
     const actions = [];
-    if (!live) actions.push(el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { await api(`/api/tickets/${t.id}/start`, { gate: true }); openTicket(t.id); }) }, f ? "Plan again" : "Plan spec"));
+    if (!live) actions.push(el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { await api(`/api/tickets/${t.id}/start`, { gate: true, autoApprove }); openTicket(t.id); }) }, autoApprove ? "Run end to end" : f ? "Plan again" : "Plan spec"));
     if (f) actions.push(" ", el("button", { class: "act", onclick: () => openTicket(t.id) }, "Open"));
     return enterRow("sprint", t.id, el("tr", {},
       el("td", {}, link(t.url, t.cid), " ", t.title, t.list ? el("div", { class: "muted" }, t.list) : null),
@@ -727,11 +736,31 @@ function removeTicket(button, t) {
     flash(r.worktree ? `${t.cid} removed; its worktree is deleted (the branch stays)` : `${t.cid} removed from the list`);
   });
 }
-$("run-start").addEventListener("click", (e) => act(e.target, async () => { const ref = $("run-ref").value.trim(); if (!ref) throw new Error("enter a ticket"); const r = await api(`/api/tickets/${encodeURIComponent(ref)}/start`, { gate: true }); openTicket(r.ticketId); }));
+$("run-start").addEventListener("click", (e) => act(e.target, async () => { const ref = $("run-ref").value.trim(); if (!ref) throw new Error("enter a ticket"); const r = await api(`/api/tickets/${encodeURIComponent(ref)}/start`, { gate: true, autoApprove }); openTicket(r.ticketId); }));
 
 // ---- Ticket detail: controls, timeline, logs, files, and a live step ----
 let openId = null, source = null, liveFor = null, lastLive = null, lastSig = "";
 let detailTab = "timeline", logLevel = "all", logKind = "all", logQuery = "", detailSeen = new Set(), detailFiles = {};
+// Auto-approve: runs you start here approve their spec and plan themselves and go on to the PR.
+// The choice stays in this browser; a running ticket has its own switch in its panel.
+const AUTO_HELP = "Approve the spec and plan automatically, so the run goes from the ticket to the PR without waiting for you";
+let autoApprove = false;
+try { autoApprove = localStorage.getItem("sf.autoApprove") === "1"; } catch { /* storage is optional */ }
+function switchEl(on, text, change) {
+  const button = el("button", { type: "button", role: "switch", "aria-checked": String(on), "aria-label": text });
+  button.addEventListener("click", () => change(button.getAttribute("aria-checked") !== "true", button));
+  return el("label", { class: "switch", title: AUTO_HELP }, button, el("span", {}, text));
+}
+function drawAutoSwitches() {
+  for (const slot of document.querySelectorAll(".auto-switch")) slot.replaceChildren(switchEl(autoApprove, "Auto-approve spec and plan", (on) => {
+    autoApprove = on;
+    try { localStorage.setItem("sf.autoApprove", on ? "1" : "0"); } catch { /* storage is optional */ }
+    drawAutoSwitches();
+    drawSprint();
+  }));
+  $("run-start").textContent = autoApprove ? "Run end to end" : "Plan spec";
+}
+drawAutoSwitches();
 const isLive = (t) => t.state === "running" || t.state === "queued" || t.state === "waiting_approval";
 const LEVEL = { info: "", warn: "warn", error: "bad" };
 // Events shown under their phase in the timeline (phase and step events are the timeline itself).
@@ -1028,12 +1057,14 @@ async function drawDetail(force, pushed) {
     if (t.paused) buttons.append(el("button", { class: "act primary", onclick: post("resume") }, "Continue"));
     else if (t.state !== "waiting_approval") buttons.append(el("button", { class: "act", onclick: post("pause") }, "Pause"));
     buttons.append(el("button", { class: "act", onclick: post("stop") }, "Stop"));
+    // Before the approval only: after it, nothing is left for auto-approve to do.
+    if (!t.approved) buttons.append(switchEl(Boolean(t.autoApprove), "Auto-approve", (on, button) => act(button, async () => { await api(`/api/tickets/${t.id}/auto-approve`, { on }); flash(`${t.cid} ${on ? "approves its spec itself" : "waits for your approval"}`); })));
   } else {
     // Deleted in ClickUp: a Sentry ticket gets a new ClickUp ticket; any other has to be restored there first.
     // (Tickets blocked before the gone flag existed say so in their reason; the server checks with ClickUp anyway.)
     const gone = t.gone || /ITEM_013|not found|deleted/i.test(t.blocked || "");
     if (gone && t.source) buttons.append(el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { const r = await api(`/api/sentry/${t.source.issueId}/fix`, {}); flash(`new ClickUp ticket for ${t.source.shortId}`); await openTicket(r.ticketId); }) }, "New ClickUp ticket"));
-    buttons.append(el("button", { class: "act", onclick: post("start", { gate: true }) }, "Run again"), el("button", { class: "act", onclick: post("start", { gate: true, fresh: true }) }, "Start fresh"),
+    buttons.append(el("button", { class: "act", onclick: post("start", { gate: true, autoApprove }) }, "Run again"), el("button", { class: "act", onclick: post("start", { gate: true, fresh: true, autoApprove }) }, "Start fresh"),
       el("button", { class: "act", title: REMOVE_HELP, onclick: (e) => removeTicket(e.target, t) }, "Remove"));
   }
   const used = steps.reduce((a, s) => ({ tokens: a.tokens + (s.usage?.tokens || 0), cost: a.cost + (s.usage?.cost || 0) }), { tokens: 0, cost: 0 });

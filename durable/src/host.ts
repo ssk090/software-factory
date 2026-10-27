@@ -62,7 +62,7 @@ export type HostDeps = {
 	readonly readOnly?: boolean;
 };
 
-export type StartOptions = { gate?: boolean; build?: boolean; fresh?: boolean };
+export type StartOptions = { gate?: boolean; build?: boolean; fresh?: boolean; autoApprove?: boolean };
 
 /** The pause reason the factory sets when the daily budget runs out; it continues them when it is back. */
 const BUDGET = "daily budget";
@@ -195,8 +195,10 @@ export class Factory {
 			// A ticket whose last run finished (its PR is in review) starts over.
 			const run = ticket.state === "in_review" ? { ...input, fresh: true } : input;
 			const taskId = await tx.createTask(Pipeline, run, { ownership: { kind: "conversation" }, background: true });
-			Object.assign(ticket, { taskId, state: "queued", phase: "queued", blocked: null, paused: null, gone: false, mode: input.build ? "build" : "full" });
-			const how = [input.build ? "build of the approved spec" : input.gate ? "spec, then your approval" : "the whole pipeline", run.fresh ? "fresh" : ""].filter(Boolean).join(", ");
+			const autoApprove = options.autoApprove ?? false;
+			Object.assign(ticket, { taskId, state: "queued", phase: "queued", blocked: null, paused: null, gone: false, mode: input.build ? "build" : "full", autoApprove });
+			const gated = input.gate ? (autoApprove ? "spec, approved automatically" : "spec, then your approval") : "the whole pipeline";
+			const how = [input.build ? "build of the approved spec" : gated, run.fresh ? "fresh" : ""].filter(Boolean).join(", ");
 			addEvent(ticket, { kind: "run", phase: "start", text: `Run started: ${how}` });
 			if (ticket.created === 0) ticket.created = Date.now();
 			ticket.updated = Date.now();
@@ -227,6 +229,22 @@ export class Factory {
 		if (after.taskId === null || (await this.harness.getTask(after.taskId as TaskId, context))?.state.status === "terminal") {
 			await this.start(ticketId, { build: true, gate: false });
 		}
+		return (await this.ticket(ticketId))!;
+	}
+
+	/**
+	 * Turn auto-approve on or off for a running ticket. On, the gate approves the spec and plan itself
+	 * (after any change you asked for), so the run continues to the PR; a ticket waiting there goes on now.
+	 */
+	async setAutoApprove(ref: string, on: boolean): Promise<Ticket> {
+		const ticketId = await this.deps.tracker.resolve(ref);
+		const ticket = await this.ticket(ticketId);
+		if (!(await this.live(ticket))) throw new Error(`ticket ${ref} is not running`);
+		await this.edit(ticketId, (t) => {
+			t.autoApprove = on;
+			addEvent(t, { kind: "gate", text: on ? "Auto-approve on: the spec and plan are approved without you" : "Auto-approve off: the build waits for your approval" });
+		});
+		this.wake(ticketId);
 		return (await this.ticket(ticketId))!;
 	}
 

@@ -219,7 +219,7 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 			if (method === "POST") {
 				const input = await body(req);
 				if (action === "start") {
-					return json(res, 200, await factory.start(ticketId, { gate: input.gate !== false, build: input.build === true, fresh: input.fresh === true }));
+					return json(res, 200, await factory.start(ticketId, { gate: input.gate !== false, build: input.build === true, fresh: input.fresh === true, autoApprove: input.autoApprove === true }));
 				}
 				if (action === "approve") return json(res, 200, await factory.approve(ticketId, typeof input.note === "string" ? input.note.slice(0, 20_000) : ""));
 				if (action === "stop") return json(res, 200, (await factory.stop(ticketId), { ok: true }));
@@ -227,6 +227,7 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 				const conflict = (error: unknown): never => {
 					throw new HttpFail(409, error instanceof Error ? error.message : String(error));
 				};
+				if (action === "auto-approve") return json(res, 200, await factory.setAutoApprove(ticketId, input.on !== false).catch(conflict));
 				if (action === "pause") return json(res, 200, await factory.pause(ticketId).catch(conflict));
 				if (action === "forget") return json(res, 200, await factory.forget(ticketId).catch(conflict));
 				if (action === "revise") {

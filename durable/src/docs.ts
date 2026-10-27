@@ -117,6 +117,8 @@ export type Ticket = {
 	paused: { at: number; reason: string } | null;
 	/** Changes you asked for on the spec or the plan at the gate, oldest first. */
 	revisions?: Revision[];
+	/** The gate approves the spec and plan itself: the run goes from the ticket to the PR without you. */
+	autoApprove?: boolean;
 	/** What happened, oldest first (at most MAX_EVENTS). Tickets from before events have none. */
 	events: TicketEvent[];
 	created: number;

@@ -117,6 +117,40 @@ describe("pipeline", { timeout: 120_000 }, () => {
 		}
 	});
 
+	it("approves the spec itself with auto-approve: from the ticket to the PR without you", async () => {
+		const w = await world({});
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-30", { gate: true, autoApprove: true });
+			const t = await settle(factory, "T-30");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.events.some((e) => e.text === "Spec approved automatically (auto-approve is on)"));
+			assert.ok(t.events.some((e) => e.text === "Run started: spec, approved automatically"));
+			// The auto-approved spec and plan are on the ticket, as with your approval.
+			assert.deepEqual(w.tracker.log.filter((l) => l.startsWith("attach ")), ["attach T-30 T-30-spec.md", "attach T-30 T-30-plan.md"]);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("goes on from the gate when you turn auto-approve on there", async () => {
+		const w = await world({});
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-31", { gate: true });
+			await waitFor(async () => (await factory.ticket("T-31"))?.state === "waiting_approval", "the gate");
+			await factory.setAutoApprove("T-31", true);
+			const t = await settle(factory, "T-31");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.events.some((e) => e.text === "Spec approved automatically (auto-approve is on)"));
+			await assert.rejects(factory.setAutoApprove("T-31", false), /not running/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps the spec in Simplified Technical English: a write that breaks a hard rule is blocked with its faults", async () => {
 		const w = await world({ badSpec: true });
 		const factory = await Factory.open(w.deps);

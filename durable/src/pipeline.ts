@@ -871,6 +871,7 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		gate: async (task, runtime, context) => {
 			// Waits durably for you: Approve on the dashboard (`ff approve`), or move the ticket to S_APPROVED.
+			// With auto-approve on, it approves itself.
 			let ticket = await ticketOf(task, runtime, context);
 			const polls = task.state.checkpoint.polls;
 			// A change you asked for on the spec or the plan comes before your approval.
@@ -879,6 +880,16 @@ export function createPipeline(deps: PipelineDeps) {
 				await revise(task, runtime, context, ticket, pending);
 				await advance(task, runtime, context, { polls: polls + 1 });
 				return;
+			}
+			if (ticket.approved === null && ticket.autoApprove === true) {
+				await runtime.commit(async (tx) => {
+					await editTicket(tx, ticket.id, (t) => {
+						t.approved ??= { at: Date.now(), note: "" };
+						addEvent(t, { kind: "gate", text: "Spec approved automatically (auto-approve is on)" });
+					});
+					return undefined;
+				}, context);
+				ticket = await ticketOf(task, runtime, context);
 			}
 			if (ticket.approved === null && polls % 12 === 0) {
 				const status = await tracker.info(ticket.id).then((i) => i.status, () => "");
