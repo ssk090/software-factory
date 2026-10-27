@@ -771,6 +771,24 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("wakes the queue after a free slot is committed, not before", async () => {
+		const w = await world({ coderSleep: 2 });
+		// A 60 s admit poll: only the wake after the commit can start the queued ticket soon.
+		const factory = await Factory.open({ ...w.deps, admitPollMs: 60_000 });
+		try {
+			await factory.start("T-71", { gate: false });
+			await factory.start("T-72", { gate: false });
+			const a = await settle(factory, "T-71");
+			assert.equal(a.state, "in_review", a.blocked ?? "");
+			await waitFor(async () => (await factory.ticket("T-72"))?.slot !== null, "the queued ticket's cell", 5000);
+			const b = await settle(factory, "T-72");
+			assert.equal(b.state, "in_review", b.blocked ?? "");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);

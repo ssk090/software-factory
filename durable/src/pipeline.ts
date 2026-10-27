@@ -311,7 +311,6 @@ export function createPipeline(deps: PipelineDeps) {
 			return { status: "running", checkpoint };
 		}, context);
 	const finish = async (task: T, runtime: R, context: Context, result: PipelineResult, edit: Edit) => {
-		setTimeout(() => wake(), 0); // the slot frees with this commit: queued tickets look now
 		// The ticket's sandbox container goes with its run (a later run makes a new one).
 		const name = container(await ticketOf(task, runtime, context));
 		if (name !== null) await removeContainer(name);
@@ -332,6 +331,8 @@ export function createPipeline(deps: PipelineDeps) {
 			});
 			return { status: "terminal", outcome: { status: "completed", result } };
 		}, context);
+		// The slot is free in the committed state now: a queued ticket looks at once, not at its next poll.
+		wake();
 	};
 
 	const ticketOf = async (task: T, runtime: R, context: Context): Promise<Ticket> =>
