@@ -13,6 +13,7 @@ Do this:
 2. Write RUN_DIR/plan.md:
    - For each acceptance criterion (AC-1, AC-2, ...): the test that will prove it (file, test name, kind: unit / integration / e2e) and the code to change.
    - Files to change, in order.
+   - When the prompt names backend repos: one line `Repos: <repo> (<what changes>), ...` that names every repo the work changes, REPO too. Only a repo on this line gets changed.
    - How to run the tests (the exact command).
    - A "Diagram" section with one Mermaid flowchart in a ```mermaid code block: each acceptance criterion, the test that proves it, and the files that change, in the order of the work. At most 15 nodes.
    Write it in Simplified Technical English (the rules follow below).

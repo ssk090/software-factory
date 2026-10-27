@@ -28,6 +28,19 @@ export async function scratchRepo(base = tmpdir()) {
 	return { root, repo: join(root, "repo"), data: join(root, "data"), git: sh };
 }
 
+/** A bare origin with one commit on main: a backend repo for BACKEND_REPOS. */
+export async function scratchOrigin(root: string, name: string): Promise<string> {
+	const origin = join(root, "backends", `${name}.git`);
+	const seed = join(root, "backends", `${name}-seed`);
+	execFileSync("git", ["init", "-q", "--bare", origin]);
+	execFileSync("git", ["clone", "-q", origin, seed], { stdio: "pipe" });
+	await writeFile(join(seed, "README.md"), `${name}\n`);
+	execFileSync("git", ["-C", seed, "add", "."]);
+	execFileSync("git", ["-C", seed, "commit", "-q", "-m", "init"]);
+	execFileSync("git", ["-C", seed, "push", "-q", "origin", "HEAD:main"], { stdio: "pipe" });
+	return origin;
+}
+
 export function testConfig(repo: string, data: string, extra: Record<string, string> = {}) {
 	return loadConfig(
 		{
@@ -93,13 +106,16 @@ export class FakeTracker implements Tracker {
 export class FakeGitHost implements GitHost {
 	readonly log: string[] = [];
 	private prs = new Map<string, string>();
-	async prFor(_w: string, branch: string) {
-		return this.prs.get(branch) ?? null;
+	/** The body each PR was opened with, by URL. */
+	readonly bodies = new Map<string, string>();
+	async prFor(_w: string, branch: string, repo?: string) {
+		return this.prs.get(`${repo ?? ""}|${branch}`) ?? null;
 	}
-	async createDraft(_w: string, base: string, branch: string, title: string) {
+	async createDraft(_w: string, base: string, branch: string, title: string, body: string, repo?: string) {
 		const url = `https://example.test/pr/${this.prs.size + 1}`;
-		this.prs.set(branch, url);
-		this.log.push(`create ${base} ${branch} ${title}`);
+		this.prs.set(`${repo ?? ""}|${branch}`, url);
+		this.bodies.set(url, body);
+		this.log.push(`create ${base} ${branch} ${title}${repo ? ` repo=${repo}` : ""}`);
 		return url;
 	}
 	async edit(_w: string, pr: string, title: string) {
@@ -155,6 +171,8 @@ export type Behaviour = {
 	coordinator?: "commit-fixed" | "remove-leak" | "give-up" | "verify-concurrency" | "finish-coder" | "remove-listed";
 	/** The coder does the work but does not commit, and writes this into blocked.md. */
 	coderGivesUp?: string;
+	/** The coder also commits a change in this backend repo (its worktree comes from the Context line). */
+	coderBackend?: string;
 };
 
 /**
@@ -209,8 +227,10 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 			const escape = "{ git update-ref refs/heads/main HEAD; git branch other-ticket; git tag v-agent; } >" + `${run}/escape.log 2>&1;`;
 			const leak = behaviour.coderFile ? `mkdir -p "$(dirname ${behaviour.coderFile[0]})" && printf '%s\\n' ${JSON.stringify(behaviour.coderFile[1])} > ${behaviour.coderFile[0]} && git add ${behaviour.coderFile[0]}; ` : "";
 			const extra = (round === 1 && behaviour.coder ? `${behaviour.coder}; ` : "") + leak;
+			const backend = behaviour.coderBackend ? new RegExp(`\\b${behaviour.coderBackend}=(\\S+)`).exec(prompt)?.[1] : undefined;
+			const backendChange = backend ? `(cd ${backend} && echo api > api.txt && git add api.txt && git commit -qm "api: the field") >> ${run}/backend.log 2>&1; ` : "";
 			const pause = behaviour.coderSleep ? `touch ${run}/coder-started; sleep ${behaviour.coderSleep}; ` : "";
-			return bash(`${escape} ${extra}${pause}echo "port $PORT_BASE token \${CLICKUP_TOKEN:-none} $([ -f /.dockerenv ] && echo container || echo host)" > ${run}/cell.txt; echo code >> file.txt && git add file.txt && git commit -qm "code"`);
+			return bash(`${escape} ${extra}${backendChange}${pause}echo "port $PORT_BASE token \${CLICKUP_TOKEN:-none} $([ -f /.dockerenv ] && echo container || echo host)" > ${run}/cell.txt; echo code >> file.txt && git add file.txt && git commit -qm "code"`);
 		}
 		if (prompt.includes("# Agent: coordinator")) {
 			const n = round;

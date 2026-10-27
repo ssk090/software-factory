@@ -154,9 +154,11 @@ const sq = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
  * except the ticket's own branch. Every other hook, and the guard once it allows a change, runs the
  * repo's own hook, so husky and similar keep working.
  */
-export async function writeGuardHooks(repo: string, runDir: string, cid: string, branch: string): Promise<string> {
+export async function writeGuardHooks(repo: string, runDir: string, cid: string, branch: string, others: readonly string[] = []): Promise<string> {
 	const dir = join(runDir, "git-hooks");
-	const common = await realpath(await gitOk(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"));
+	// REPO and the backend repos (BACKEND_REPOS): the same branch rule holds in each.
+	const commons: string[] = [];
+	for (const r of [repo, ...others]) commons.push(await realpath(await gitOk(r, "rev-parse", "--path-format=absolute", "--git-common-dir")));
 	await rm(dir, { recursive: true, force: true });
 	await mkdir(dir, { recursive: true });
 	await writeFile(
@@ -177,13 +179,14 @@ exec "$dir/$name" "$@"
 		`#!/bin/sh
 # Ticket guard (written by the factory): an agent of ${cid.replace(/[^\w.-]/g, "_")} may change only its own branch.
 BR=${sq(branch)}
-COMMON=${sq(common)}
 LOG=${sq(join(runDir, "guard.log"))}
 STASHES=${sq(join(runDir, "lint-staged-stashes"))}
 in=$(cat)
 # another repository (an agent cloned something): not ours to guard
 here=$(cd "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)
-if [ "$1" = prepared ] && [ "$here" = "$COMMON" ]; then
+ours=
+case $here in ${commons.map(sq).join("|")}) ours=1 ;; esac
+if [ "$1" = prepared ] && [ -n "$ours" ]; then
   bad=
   while read -r old new ref; do
     [ -n "$ref" ] || continue

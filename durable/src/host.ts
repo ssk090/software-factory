@@ -23,6 +23,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Config } from "./config.ts";
 import { addEvent, type Issue, SentryInbox, StepDoc, type StepUsage, type Ticket, TicketDoc, TicketIndex } from "./docs.ts";
 import { dockerEnv, type EnvFactory, nodeEnvWith, reapOrphans, removeContainer } from "./env.ts";
+import { backendCache, backendsDir, backendTree, removeBackendTree } from "./backends.ts";
 import { cellEnv, git, gitIdentity, removeWorktree, useOriginUrl } from "./git.ts";
 import type { GitHost } from "./github.ts";
 import type { Lanes } from "./lanes.ts";
@@ -302,7 +303,7 @@ export class Factory {
 		const { config } = this.deps;
 		// Only a worktree the factory made: inside its worktrees folder.
 		const worktree = ticket?.worktree && ticket.worktree.startsWith(config.treesDir + sep) && (await stat(ticket.worktree).then(() => true, () => false)) ? ticket.worktree : null;
-		if (worktree !== null) await removeWorktree(config.repo, worktree);
+		if (worktree !== null) await this.removeTrees(worktree);
 		const name = ticket ? containerName(config, ticket.cid) : null;
 		if (name !== null) await removeContainer(name);
 		await this.root.commit(async (tx) => {
@@ -313,6 +314,14 @@ export class Factory {
 			addEvent(doc, { kind: "control", text: `Removed from the runs list${worktree ? `; its worktree was deleted (branch ${doc.branch} kept)` : ""}` });
 		}, context);
 		return { worktree };
+	}
+
+	/** A ticket's worktree and its backend worktrees (BACKEND_REPOS). */
+	private async removeTrees(worktree: string): Promise<void> {
+		const { config } = this.deps;
+		await removeWorktree(config.repo, worktree);
+		for (const b of config.backends) await removeBackendTree(backendCache(config.dataDir, b.name), backendTree(worktree, b.name));
+		await rm(backendsDir(worktree), { recursive: true, force: true });
 	}
 
 	/** Change a ticket's document (from outside its pipeline). */
@@ -518,7 +527,7 @@ export class Factory {
 			const pr = ticket.pr === null ? null : await this.deps.gitHost.state(ticket.worktree, ticket.branch).catch(() => null);
 			const idle = Date.now() - ticket.updated > days * 86_400_000;
 			if (pr !== "MERGED" && pr !== "CLOSED" && !idle) continue;
-			await removeWorktree(this.deps.config.repo, ticket.worktree);
+			await this.removeTrees(ticket.worktree);
 			let why = pr === "MERGED" || pr === "CLOSED" ? `PR ${pr.toLowerCase()}` : `idle more than ${days} days`;
 			if (pr === "MERGED" && (await git(this.deps.config.repo, "branch", "-q", "-D", ticket.branch)).code === 0) why += ", local branch deleted";
 			const name = containerName(this.deps.config, ticket.cid);
