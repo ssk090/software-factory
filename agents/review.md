@@ -14,7 +14,7 @@ Do this:
    If RUN_DIR/runtime.md exists, read it: the factory checked the change in a browser. A finding there is CONFIRMED unless you can show that it is wrong. A `VERDICT: FAIL` is a P1.
 2. Review on two axes: Standards (repo conventions) and Spec. For Spec, go through every acceptance criterion in spec.md: is it implemented, and is there a test that proves it (see tests.md)? Mark each AC met / not met. A missing or weakened test for an AC is a P1. Also check: logic, safety, load and performance, missing tests, bloat, repo conventions.
 3. If earlier review-N.md files exist, check each of their P1 and P2 findings is fixed.
-   If RUN_DIR/verify-failed.md exists, the factory itself ran VERIFY_CMD on this HEAD and it failed: that is a P1.
+   If RUN_DIR/verify-failed.md exists, the factory itself ran VERIFY_CMD on this HEAD and it failed: that is a P1. When the file also quotes a failure on the base branch, the base was already red. Compare the two tails. A failure that the base does not have (a new failing test, for example) is a P1.
 4. Write RUN_DIR/review-<ROUND>.md. If a review skill uses its own severity tiers, map them: 🚨 and 🔴 = P1, 🟡 = P2, 🟢 = P3, and keep its other sections (for example a Confidence Score) above the verdict. Label each finding P1 (breaks or unsafe), P2 (major), or P3 (minor). Give file:line, the problem, and the fix. Skip pure style nits.
 5. The LAST line must be exactly VERDICT: PASS (no P1 or P2) or VERDICT: FIX (any P1 or P2).
 6. Write RUN_DIR/review-<ROUND>.comments.json: the inline comments for the PR, a JSON array (write `[]` when there are none). The factory posts them with review-<ROUND>.md as one PR review; you do not post anything yourself, even when a skill says to.

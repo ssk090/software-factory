@@ -423,6 +423,40 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("runs VERIFY_CMD again on the base, so one flaky failure does not turn the gate off", async () => {
+		// The first run fails and leaves the marker; the second run finds it and passes.
+		const w = await world({}, async (root) => ({ VERIFY_CMD: `test -f ${root}/flaky || { touch ${root}/flaky; false; }` }));
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-12", { gate: false });
+			const t = await settle(factory, "T-12");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.deepEqual(t.verify.filter((v) => v.round === 1).map((v) => v.ok), [true], "the base passed on the second run");
+			assert.ok(!t.events.some((e) => /already fails VERIFY_CMD/.test(e.text)), "a flaky base is not red");
+			assert.ok(t.events.some((e) => /failed once on main and passed on the second run/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("writes the branch failure for the reviewer when the base already fails VERIFY_CMD", async () => {
+		const w = await world({}, { VERIFY_CMD: "! test -f README.md" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-14", { gate: false });
+			const t = await settle(factory, "T-14");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			const failed = await readFile(join(t.run!, "verify-failed.md"), "utf8");
+			assert.match(failed, /failed \(exit 1\)/);
+			assert.match(failed, /also fails on main before this ticket/, "the base failure is in the file too");
+			assert.match(failed, /new failing test[^.]*P1/, "the reviewer is told a new failure is a P1");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);

@@ -473,18 +473,29 @@ export function createPipeline(deps: PipelineDeps) {
 
 	/**
 	 * verify <round>: the factory runs VERIFY_CMD itself and does not take an agent's word. Round 1 is
-	 * the untouched base branch; when that already fails the gate only reports.
+	 * the untouched base branch. When that already fails, the gate only reports.
 	 */
 	const verify = async (ticket: Ticket, round: number, baselineRed: boolean, context: Context): Promise<{ ok: boolean; killed: boolean; tail: string }> => {
 		if (!config.verifyCmd) return { ok: true, killed: false, tail: "" };
 		const code = await exec(ticket, await verifyCommand(), `verify-${round}.log`, context);
 		const failed = join(ticket.run!, "verify-failed.md");
-		const tail = (await readText(join(ticket.run!, `verify-${round}.log`))).split("\n").slice(-120).join("\n");
+		const log = (await readText(join(ticket.run!, `verify-${round}.log`))).split("\n");
+		const tail = log.slice(-120).join("\n");
 		// Killed (out of memory, SIGKILL) is no result at all: never a red base, and not the code's fault.
 		const killed = code !== 0 && KILLED.test(tail);
-		if (code === 0 || baselineRed) await rm(failed, { force: true });
+		// The branch's failure is always a file, even when the base already fails: the reviewer must see
+		// what this ticket broke, next to the failure that was there before it.
+		if (code === 0 || killed || round === 1) await rm(failed, { force: true });
 		else {
-			await writeFile(failed, `The factory ran VERIFY_CMD (${config.verifyCmd}) on HEAD ${(await head(ticket.worktree!)).slice(0, 12)} and it failed (exit ${code}). Last lines:\n\n\`\`\`\n${tail.split("\n").slice(-80).join("\n")}\n\`\`\`\n`);
+			const fenced = (text: string) => `\`\`\`\n${text}\n\`\`\``;
+			const base = baselineRed ? (await readText(join(ticket.run!, "verify-1.log"))).split("\n").slice(-80).join("\n").trim() : "";
+			const lines = [
+				`The factory ran VERIFY_CMD (${config.verifyCmd}) on HEAD ${(await head(ticket.worktree!)).slice(0, 12)} and it failed (exit ${code}). Last lines:`,
+				"",
+				fenced(log.slice(-80).join("\n")),
+			];
+			if (baselineRed) lines.push("", `The same command also fails on ${config.base} before this ticket (verify-1.log). A failure that ${config.base} does not have, such as a new failing test or a new type error, is this ticket's bug: the reviewer counts it as a P1. Last lines on ${config.base}:`, "", base === "" ? "(no output)" : fenced(base));
+			await writeFile(failed, `${lines.join("\n")}\n`);
 		}
 		return { ok: code === 0, killed, tail };
 	};
@@ -1066,18 +1077,22 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		"verify-base": async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
-			const { ok, killed, tail } = await verify(ticket, 1, false, context);
+			let { ok, killed, tail } = await verify(ticket, 1, false, context);
+			// A red base turns the gate off for the whole run, so it takes two failures: one flaky failure
+			// must not do it. A killed run is no result at all, so it is never run again here.
+			const flaky = !ok && !killed;
+			if (flaky) ({ ok, killed, tail } = await verify(ticket, 1, false, context));
 			// Killed (out of memory): the coordinator finds a way to run the same check that fits.
 			if (killed && (await canRepair(task, "verify-base"))) {
 				throw new Repairable("killed", `VERIFY_CMD was killed on ${config.base} (out of memory or SIGKILL)`, `$ ${await verifyCommand()}\n${tail}`);
 			}
 			// Only a real failure makes the base red; a killed run says nothing, so the gate stays on.
 			const red = !ok && !killed;
-			if (red) log(ticket, `origin/${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block`);
+			if (red) log(ticket, `origin/${config.base} already fails VERIFY_CMD twice (verify-1.log): the verify gate will report, not block`);
 			await advance(task, runtime, context, { phase: "test", baselineRed: red }, (t) => {
 				if (!config.verifyCmd) return;
 				t.verify.push({ round: 1, ok, log: "verify-1.log" });
-				addEvent(t, ok ? { kind: "verify", text: `VERIFY_CMD passes on ${config.base}` }
+				addEvent(t, ok ? { kind: "verify", text: flaky ? `VERIFY_CMD failed once on ${config.base} and passed on the second run (verify-1.log): the gate stays on` : `VERIFY_CMD passes on ${config.base}` }
 					: killed ? { kind: "verify", level: "warn", text: `VERIFY_CMD was killed on ${config.base} (out of memory or SIGKILL, verify-1.log): no result, so the gate stays on. To fix: ${KILLED_HELP}` }
 					: { kind: "verify", level: "warn", text: `${config.base} already fails VERIFY_CMD (verify-1.log): the verify gate will report, not block` });
 			});
