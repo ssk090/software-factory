@@ -15,6 +15,8 @@ export type Statuses = {
 
 export type Config = {
 	readonly here: string;
+	/** The config.env the factory reads (and the onboarding page writes). */
+	readonly configFile: string;
 	readonly dataDir: string;
 	readonly stateDir: string;
 	readonly runsDir: string;
@@ -131,6 +133,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 	};
 	return {
 		here,
+		configFile: env.FACTORY_CONFIG || join(here, "config.env"),
 		dataDir,
 		stateDir: join(dataDir, "state"),
 		runsDir: join(dataDir, "runs"),
