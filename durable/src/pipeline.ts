@@ -7,7 +7,7 @@
 //
 //   start -> admit -> fetch -> worktree -> spec -> plan -> post-spec -> gate (you approve)
 //   -> setup -> verify-base -> test -> code -> verify-code [-> code #2] -> docs -> runtime (UI) -> pr-summary
-//   -> pr -> review <-> fix -> pr-summary #2 -> judge -> report
+//   -> pr (backend PRs first, BACKEND_REPOS) -> review <-> fix -> pr-summary #2 -> judge -> report
 //
 // Effects outside the session are made safe to repeat: tracker statuses and pushes are idempotent,
 // the PR is looked up before it is created, and comments are memoized before they are posted (a
@@ -31,6 +31,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { Config } from "./config.ts";
 import { addEvent, type Revision, StepDoc, type StepRecord, type StepUsage, type Ticket, TicketDoc, type TicketEvent, TicketIndex } from "./docs.ts";
+import { backendCache, backendsDir, backendTree, commitsAhead, prepareBackend, pushBackend } from "./backends.ts";
 import { type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
 import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, run, testsKept, writeGuardHooks } from "./git.ts";
 import { indexScope, loadIndexOptions } from "./index/options.ts";
@@ -448,13 +449,13 @@ export function createPipeline(deps: PipelineDeps) {
 	};
 
 	/** Run a command in the ticket's environment (its container in docker mode); output to RUN/<logName>. */
-	const exec = async (ticket: Ticket, command: string, logName: string, context: Context): Promise<number> => {
+	const exec = async (ticket: Ticket, command: string, logName: string, context: Context, cwd = ticket.worktree!): Promise<number> => {
 		const env = deps.envFor({ worktree: ticket.worktree!, run: ticket.run!, cell: cell(ticket), container: container(ticket) });
 		const file = join(ticket.run!, logName);
 		await writeFile(file, "");
 		let pending = Promise.resolve();
 		const result = await env.exec(command, {
-			cwd: ticket.worktree!,
+			cwd,
 			timeout: Math.max(1, Math.round(config.agentTimeoutMs / 1000)),
 			onOutput: (text) => {
 				pending = pending.then(() => appendFile(file, text));
@@ -570,6 +571,8 @@ export function createPipeline(deps: PipelineDeps) {
 			portSpan: config.cellPortSpan, repoSkillDirs: config.repoSkillDirs, skillsPath: config.skillsPath,
 			lessons: await readLessons(config.stateDir, step.role),
 			index: config.indexAuto,
+			backends: await backendsOf(ticket),
+			backendBase: config.backendBase,
 			log: (line) => log(ticket, line),
 		});
 		const submission = await handle.submit({ type: "input", content: prompt, requestId: `step:${name}` }, context);
@@ -724,6 +727,63 @@ export function createPipeline(deps: PipelineDeps) {
 	const readOnly = async (ticket: Ticket, stepHead: string | null, label: string) => {
 		if (stepHead !== null && (await head(ticket.worktree!)) !== stepHead) throw new Blocked(`${label} committed to ${ticket.branch}, but it may only read`);
 	};
+	/** The ticket's backend worktrees that exist (a repo that could not be cloned has none). */
+	const backendsOf = async (ticket: Ticket) => {
+		const out: { name: string; path: string }[] = [];
+		for (const b of config.backends) {
+			const path = backendTree(ticket.worktree!, b.name);
+			if (await exists(path)) out.push({ name: b.name, path });
+		}
+		return out;
+	};
+	/** The frontend PR body, with a link to every backend PR it needs. */
+	const withBackendPrs = (body: string, prs: readonly { repo: string; pr: string }[]) =>
+		prs.length === 0 ? body : `${body.trimEnd()}\n\nDepends on:\n${prs.map((p) => `- ${p.repo}: ${p.pr}`).join("\n")}\n`;
+	/**
+	 * Push every backend repo the ticket changed, and open its draft PR (or find the open one). The same
+	 * guardrails as REPO: its branch only, the secret scan, and BACKEND_VERIFY_CMD in the sandbox.
+	 */
+	const pushBackends = async (ticket: Ticket, runtime: R, context: Context): Promise<{ repo: string; pr: string }[]> => {
+		const prs: { repo: string; pr: string }[] = [];
+		for (const b of config.backends) {
+			const tree = backendTree(ticket.worktree!, b.name);
+			if (!(await exists(tree)) || (await commitsAhead(tree, config.backendBase)) === 0) continue;
+			if ((await currentBranch(tree)) !== ticket.branch) throw new Blocked(`the ${b.name} worktree left branch ${ticket.branch}`);
+			const tracking = `refs/remotes/origin/${ticket.branch}`;
+			const since = (await git(tree, "rev-parse", "-q", "--verify", tracking)).code === 0 ? tracking : `refs/remotes/origin/${config.backendBase}`;
+			const findings = await scanBranch(tree, since);
+			if (findings.length > 0) {
+				throw new Repairable("secrets", `the push of ${b.name} stopped: the secret scan found ${findings.length} possible secret(s)`, `REPO=${tree}\nSINCE=${since}\n\n${formatFindings(findings)}`);
+			}
+			if (config.backendVerifyCmd) {
+				const logName = `verify-${b.name}.log`;
+				const code = await exec(ticket, config.backendVerifyCmd, logName, context, tree);
+				const tail = (await readText(join(ticket.run!, logName))).split("\n").slice(-120).join("\n");
+				if (code !== 0) throw new Repairable("verify", `BACKEND_VERIFY_CMD fails in ${b.name} (exit ${code}), see ${logName}`, `$ cd ${tree} && ${config.backendVerifyCmd}\n${tail}`);
+			}
+			await pushBackend(tree, ticket.branch!, config.prePush);
+			let pr = await gitHost.prFor(tree, ticket.branch!, b.slug);
+			if (pr === null) {
+				const title = await scrub(runtime, context, ticket, "the backend PR title", (await readText(join(ticket.run!, "pr-title.txt"))).trim() || ticket.title);
+				const body = await scrub(runtime, context, ticket, "the backend PR body", `The ${b.name} part of ${ticket.cid}: ${ticket.url}\n\n${await readText(join(ticket.run!, "pr-body.md"))}`);
+				pr = await gitHost.createDraft(tree, config.backendBase, ticket.branch!, title, body, b.slug);
+				if (config.prLabel) await gitHost.addLabel(tree, pr, config.prLabel).catch((e) => log(ticket, `label: ${message(e)}`));
+			}
+			prs.push({ repo: b.name, pr });
+		}
+		const known = ticket.backendPrs ?? [];
+		const fresh = prs.filter((p) => !known.some((k) => k.repo === p.repo && k.pr === p.pr));
+		if (fresh.length > 0) {
+			await runtime.commit(async (tx) => {
+				await editTicket(tx, ticket.id, (t) => {
+					t.backendPrs = [...(t.backendPrs ?? []).filter((k) => !fresh.some((p) => p.repo === k.repo)), ...fresh];
+					for (const p of fresh) addEvent(t, { kind: "pr", text: `Backend PR for ${p.repo}: ${p.pr}` });
+				});
+				return undefined;
+			}, context);
+		}
+		return [...known.filter((k) => !fresh.some((p) => p.repo === k.repo)), ...fresh];
+	};
 	/** Files whose change can change what a browser sees. */
 	const UI_FILES = /\.(?:tsx|jsx|css|scss|sass|less|html)$/i;
 	const touchesUi = async (worktree: string) =>
@@ -750,7 +810,7 @@ export function createPipeline(deps: PipelineDeps) {
 			await advance(task, runtime, context, { phase: "admit", freshDone: true }, (t) => {
 				Object.assign(t, { cid: info.cid, title: info.title, url: info.url, branch, run, worktree: join(config.treesDir, info.cid), blocked: null });
 				t.state = "queued";
-				if (fresh) Object.assign(t, { specStatus: null, approved: null, verify: [], reviews: [], pr: null, judge: null, resume: null });
+				if (fresh) Object.assign(t, { specStatus: null, approved: null, verify: [], reviews: [], pr: null, backendPrs: [], judge: null, resume: null });
 				if (task.input.build) t.mode = "build";
 			});
 		},
@@ -798,13 +858,27 @@ export function createPipeline(deps: PipelineDeps) {
 			// Fresh: cut again from the base. If this phase runs twice (a crash before its checkpoint),
 			// nothing has happened in the new worktree yet, so cutting it again is harmless.
 			const how = await prepareWorktree(config.repo, config.base, ticket.branch!, ticket.worktree!, task.input.fresh);
-			await writeGuardHooks(config.repo, ticket.run!, ticket.cid, ticket.branch!);
+			// Each backend repo on the same branch. One that cannot be cloned (no access, a typo) is skipped
+			// and said: a ticket that needs only REPO still runs.
+			const caches: string[] = [];
+			for (const b of config.backends) {
+				const cache = backendCache(config.dataDir, b.name);
+				try {
+					await prepareBackend({ cache, url: b.url, base: config.backendBase, branch: ticket.branch!, tree: backendTree(ticket.worktree!, b.name), fresh: task.input.fresh });
+					caches.push(cache);
+				} catch (error) {
+					await note(runtime, context, ticket.id, { kind: "git", level: "warn", text: `Backend repo ${b.name} skipped: ${message(error)}` });
+				}
+			}
+			await writeGuardHooks(config.repo, ticket.run!, ticket.cid, ticket.branch!, caches);
 			const name = container(ticket);
 			if (name !== null) {
+				// Backend worktrees and their clones, at the same paths inside (their .git files point into the clones).
+				const backendMounts = caches.length === 0 ? [] : [backendsDir(ticket.worktree!), join(config.dataDir, "backends")].flatMap((dir) => ["-v", `${dir}:${dir}`]);
 				await ensureContainer({
 					name, image: config.sandboxImage, worktree: ticket.worktree!, run: ticket.run!,
 					gitDir: await gitOk(config.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"),
-					cacheVolume: config.cacheVolume, extraArgs: config.sandboxArgs,
+					cacheVolume: config.cacheVolume, extraArgs: [...backendMounts, ...config.sandboxArgs],
 					index: { dir: config.indexDir, scope: indexScope(ticket.cid) },
 				});
 			}
@@ -1048,12 +1122,14 @@ export function createPipeline(deps: PipelineDeps) {
 		},
 		pr: async (task, runtime, context) => {
 			const ticket = await ticketOf(task, runtime, context);
+			// The backend PRs go first: the frontend PR links them.
+			const backendPrs = await pushBackends(ticket, runtime, context);
 			await pushSafely(ticket, runtime, context);
 			let pr = ticket.pr ?? (await gitHost.prFor(ticket.worktree!, ticket.branch!));
 			let assigned = "";
 			if (pr === null) {
 				const title = await scrub(runtime, context, ticket, "the PR title", (await readText(join(ticket.run!, "pr-title.txt"))).trim());
-				const body = await scrub(runtime, context, ticket, "the PR body", await readText(join(ticket.run!, "pr-body.md")));
+				const body = await scrub(runtime, context, ticket, "the PR body", withBackendPrs(await readText(join(ticket.run!, "pr-body.md")), backendPrs));
 				pr = await gitHost.createDraft(ticket.worktree!, config.base, ticket.branch!, title, body);
 				if (config.prLabel) await gitHost.addLabel(ticket.worktree!, pr, config.prLabel).catch((e) => log(ticket, `label: ${e instanceof Error ? e.message : e}`));
 				// Only a PR the factory opens; a failure is said, and the run goes on.
@@ -1114,7 +1190,15 @@ export function createPipeline(deps: PipelineDeps) {
 		"push-fix": async (task, runtime, context) => {
 			// Its own phase: a refused push goes to the coordinator, and only the push runs again.
 			const ticket = await ticketOf(task, runtime, context);
+			const before = (ticket.backendPrs ?? []).length;
+			const backendPrs = await pushBackends(ticket, runtime, context);
 			await pushSafely(ticket, runtime, context);
+			// A fix that first touched a backend repo: the frontend PR links its new PR too.
+			if (backendPrs.length > before && ticket.pr) {
+				const title = (await readText(join(ticket.run!, "pr-title.txt"))).trim();
+				const body = withBackendPrs(await readText(join(ticket.run!, "pr-body.md")), backendPrs);
+				if (title) await gitHost.edit(ticket.worktree!, ticket.pr, title, await scrub(runtime, context, ticket, "the PR body", body)).catch((e) => log(ticket, `PR edit: ${message(e)}`));
+			}
 			await advance(task, runtime, context, { phase: "review", round: task.state.checkpoint.round + 1, step: null }, (t) => {
 				addEvent(t, { kind: "git", text: `Fixes pushed to ${ticket.branch}` });
 			});
@@ -1124,7 +1208,7 @@ export function createPipeline(deps: PipelineDeps) {
 			if (!(await runAgent(task, runtime, context, "pr-summary", 2))) return;
 			const ticket = await ticketOf(task, runtime, context);
 			const title = (await readText(join(ticket.run!, "pr-title.txt"))).trim();
-			const body = await readText(join(ticket.run!, "pr-body.md"));
+			const body = withBackendPrs(await readText(join(ticket.run!, "pr-body.md")), ticket.backendPrs ?? []);
 			if (title && body.trim()) {
 				const [t, b] = [await scrub(runtime, context, ticket, "the PR title", title), await scrub(runtime, context, ticket, "the PR body", body)];
 				await gitHost.edit(ticket.worktree!, ticket.pr!, t, b).catch((e) => log(ticket, `PR edit: ${e instanceof Error ? e.message : e}`));

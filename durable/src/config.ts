@@ -2,6 +2,7 @@
 // settings and secrets, as before) before it starts node, so shell syntax in it keeps working.
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { type BackendRepo, parseBackends } from "./backends.ts";
 
 export type Statuses = {
 	readonly todo: string;
@@ -26,6 +27,11 @@ export type Config = {
 	readonly verifyCmd: string;
 	/** Run a browser check of UI changes before the review (RUNTIME_CHECK=1). */
 	readonly runtimeCheck: boolean;
+	/** More repos a ticket reads and changes next to REPO (BACKEND_REPOS="name=url ..."). */
+	readonly backends: readonly BackendRepo[];
+	readonly backendBase: string;
+	/** Run in each changed backend repo before its push (empty: none). */
+	readonly backendVerifyCmd: string;
 	readonly statuses: Statuses;
 	readonly specGate: boolean;
 	readonly maxReviewRounds: number;
@@ -133,6 +139,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		setupCmd: env.SETUP_CMD ?? "",
 		verifyCmd: env.VERIFY_CMD ?? "",
 		runtimeCheck: flag(env.RUNTIME_CHECK, false),
+		backends: parseBackends(env.BACKEND_REPOS),
+		backendBase: env.BACKEND_BASE || "develop",
+		backendVerifyCmd: env.BACKEND_VERIFY_CMD ?? "",
 		statuses: {
 			todo: env.S_TODO || "to do",
 			specReview: env.S_SPEC_REVIEW || "spec review",

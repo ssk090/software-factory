@@ -5,9 +5,9 @@ import { run } from "./git.ts";
 export type InlineComment = { path: string; line: number; start_line?: number; body: string };
 
 export interface GitHost {
-	/** The open PR of a branch, or null. */
-	prFor(worktree: string, branch: string): Promise<string | null>;
-	createDraft(worktree: string, base: string, branch: string, title: string, body: string): Promise<string>;
+	/** The open PR of a branch, or null. `repo` (owner/name) when it is not the worktree's own repo. */
+	prFor(worktree: string, branch: string, repo?: string): Promise<string | null>;
+	createDraft(worktree: string, base: string, branch: string, title: string, body: string, repo?: string): Promise<string>;
 	edit(worktree: string, pr: string, title: string, body: string): Promise<void>;
 	addLabel(worktree: string, pr: string, label: string): Promise<void>;
 	addAssignees(worktree: string, pr: string, logins: readonly string[]): Promise<void>;
@@ -26,12 +26,13 @@ async function gh(cwd: string, args: string[], input?: string): Promise<string> 
 }
 
 export class GitHubCli implements GitHost {
-	async prFor(worktree: string, branch: string) {
-		const r = await run("gh", ["pr", "view", branch, "--json", "url,state", "-q", 'select(.state == "OPEN") | .url'], { cwd: worktree, timeoutMs: 120_000 });
+	async prFor(worktree: string, branch: string, repo?: string) {
+		const r = await run("gh", ["pr", "view", branch, ...(repo ? ["--repo", repo] : []), "--json", "url,state", "-q", 'select(.state == "OPEN") | .url'], { cwd: worktree, timeoutMs: 120_000 });
 		return r.code === 0 && r.stdout.trim() !== "" ? r.stdout.trim() : null;
 	}
-	createDraft(worktree: string, base: string, branch: string, title: string, body: string) {
-		return gh(worktree, ["pr", "create", "--draft", "--base", base, "--head", branch, "--title", title, "--body-file", "-"], body);
+	createDraft(worktree: string, base: string, branch: string, title: string, body: string, repo?: string) {
+		// --repo wins over GH_REPO, which names REPO.
+		return gh(worktree, ["pr", "create", ...(repo ? ["--repo", repo] : []), "--draft", "--base", base, "--head", branch, "--title", title, "--body-file", "-"], body);
 	}
 	async edit(worktree: string, pr: string, title: string, body: string) {
 		await gh(worktree, ["pr", "edit", pr, "--title", title, "--body-file", "-"], body);

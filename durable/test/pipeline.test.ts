@@ -3,7 +3,7 @@
 //   cd durable && npm test
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -11,13 +11,13 @@ import type { TaskId } from "@earendil-works/pi-durable";
 import type { Ticket } from "../src/docs.ts";
 import { Factory, type HostDeps } from "../src/host.ts";
 import { readLessons } from "../src/lessons.ts";
-import { FakeGitHost, FakeTracker, fauxAgents, lanes, scratchRepo, testConfig, type Behaviour } from "./support.ts";
+import { FakeGitHost, FakeTracker, fauxAgents, lanes, scratchOrigin, scratchRepo, testConfig, type Behaviour } from "./support.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-async function world(behaviour: Behaviour = {}, extra: Record<string, string> = {}) {
+async function world(behaviour: Behaviour = {}, extra: Record<string, string> | ((root: string) => Promise<Record<string, string>>) = {}) {
 	const scratch = await scratchRepo();
-	const config = testConfig(scratch.repo, scratch.data, extra);
+	const config = testConfig(scratch.repo, scratch.data, typeof extra === "function" ? await extra(scratch.root) : extra);
 	const tracker = new FakeTracker();
 	const gitHost = new FakeGitHost();
 	const { models } = fauxAgents(behaviour);
@@ -83,6 +83,35 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			assert.match(await readFile(join(t.run!, "cell.txt"), "utf8"), /^port 20000 token none/);
 			// Skills: the agent's own were delivered, the ticket's bad names skipped.
 			assert.match(await readFile(join(t.run!, "skills.log"), "utf8"), /^spec: to-spec <- /m);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("changes a backend repo on the ticket's branch, opens its draft PR first, and links it from the frontend PR", async () => {
+		let api = "";
+		const w = await world({ coderBackend: "api" }, async (root) => {
+			api = await scratchOrigin(root, "api");
+			return { BACKEND_REPOS: `api=${api} unused=${await scratchOrigin(root, "unused")}`, BACKEND_BASE: "main" };
+		});
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-36", { gate: false });
+			const t = await settle(factory, "T-36");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			// The backend branch reached the backend origin; the repo nobody changed got no branch and no PR.
+			assert.match(w.git(api, "branch", "--list", t.branch!), new RegExp(t.branch!.replace(/\//g, "\\/")));
+			const creates = w.gitHost.log.filter((l) => l.startsWith("create "));
+			assert.equal(creates.length, 2, creates.join("\n"));
+			assert.match(creates[0]!, / repo=[^ ]*api$/, "the backend PR is opened first");
+			assert.ok(!creates[1]!.includes("repo="), "then the frontend PR, in REPO");
+			assert.deepEqual(t.backendPrs, [{ repo: "api", pr: "https://example.test/pr/1" }]);
+			assert.match(w.gitHost.bodies.get(t.pr!) ?? "", /Depends on:\n- api: https:\/\/example\.test\/pr\/1/);
+			assert.ok(t.events.some((e) => e.text === "Backend PR for api: https://example.test/pr/1"), t.events.map((e) => e.text).join("\n"));
+			// Remove takes the backend worktrees with the ticket's own.
+			await factory.forget("T-36");
+			assert.equal(await stat(`${t.worktree}.backends/api`).then(() => true, () => false), false);
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });

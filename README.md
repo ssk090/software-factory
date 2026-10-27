@@ -238,6 +238,7 @@ Create the tracker statuses named in `config.env`, or map them to existing ones.
 - **Your sprint:** `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder) or `CLICKUP_SPRINT_LIST_ID`.
 - **Sentry:** `SENTRY_ORG`, `SENTRY_PROJECTS`, `SENTRY_CLICKUP_LIST_ID`, and `ff login SENTRY_AUTH_TOKEN`.
 - **The repo:** `REPO`, `BASE`, `SETUP_CMD` (e.g. `npm ci`) and `VERIFY_CMD` (e.g. `npm test`).
+- **Backend repos:** `BACKEND_REPOS="name=url ..."` and `BACKEND_BASE`. Each ticket gets a worktree of each repo on its own branch. The spec and plan read them, and the plan names the repos it changes on a `Repos:` line. The factory pushes a changed backend repo and opens its draft PR first. The PR in `REPO` links it under `Depends on:`.
 - **A browser check of UI changes:** `RUNTIME_CHECK=1`. It uses the Chromium in the sandbox image and adds `agents/runtime.md` before the review.
 - **A second model provider** (e.g. `ff login OPENAI_API_KEY`), so code is reviewed by another model family.
 

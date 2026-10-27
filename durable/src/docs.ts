@@ -98,6 +98,8 @@ export type Ticket = {
 	verify: { round: number; ok: boolean; log: string }[];
 	reviews: { round: number; verdict: "PASS" | "FIX"; file: string }[];
 	pr: string | null;
+	/** The draft PRs the factory opened in backend repos (BACKEND_REPOS), by repo name. */
+	backendPrs?: { repo: string; pr: string }[];
 	judge: { score: number; summary: string } | null;
 	blocked: string | null;
 	steps: StepRecord[];

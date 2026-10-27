@@ -9,9 +9,10 @@ import { useOriginUrl } from "../src/git.ts";
 import { verifyProblem } from "../src/lessons.ts";
 import { notInPlan, unneededFiles } from "../src/scope.ts";
 import { writeGuardHooks } from "../src/git.ts";
-import { HOOK_BYPASS, SECRET_PATHS } from "../src/roles.ts";
+import { inside } from "../src/env.ts";
+import { fileRoots, HOOK_BYPASS, SECRET_PATHS } from "../src/roles.ts";
 import { knownSecrets, redact, scanBranch, scanText } from "../src/secrets.ts";
-import { scratchRepo } from "./support.ts";
+import { scratchOrigin, scratchRepo } from "./support.ts";
 
 const github = `ghp_${"Rk7Qm2Zt9Lx4Vb8Nc1Hd6Jf3Pw5Sy0Gu2Ea7"}`;
 const known = [{ name: "CLICKUP_TOKEN", value: "pk_1234567_QWERTYUIOPASDFGHJKLZXCVB" }];
@@ -157,5 +158,39 @@ describe("guardrails", () => {
 			assert.ok(SECRET_PATHS.test(c), c);
 		}
 		for (const c of ["cat packages/build-config/qaAuth.example.json", "cat src/chip1.ts"]) assert.ok(!SECRET_PATHS.test(c), c);
+	});
+	it("lets a writer change its backend worktrees, a reader only read them, and nobody go elsewhere", async () => {
+		const tree = "/data/worktrees/T-1";
+		const run = "/data/runs/T-1";
+		const may = (role: string, writes: boolean, path: string) => inside(path, tree, fileRoots(role, tree, run, writes));
+		assert.ok(await may("code", true, "/data/worktrees/T-1.backends/api/src/Dto.java"), "the coder writes a backend repo");
+		assert.ok(await may("review", false, "/data/worktrees/T-1.backends/api/src/Dto.java"), "the reviewer reads it");
+		assert.ok(!(await may("review", true, "/data/worktrees/T-1.backends/api/src/Dto.java")), "the reviewer never writes it");
+		assert.ok(!(await may("code", true, "/data/backends/api/.git/config")), "nobody writes the backend clone itself");
+		assert.ok(!(await may("code", true, "/data/worktrees/T-2.backends/api/x")), "nor another ticket's backend worktree");
+		assert.ok(!(await may("code", true, "/elsewhere/chip1-other/x")), "nor a repo outside BACKEND_REPOS");
+	});
+
+	it("keeps an agent on its ticket's branch in a backend repo too", async () => {
+		const w = await scratchRepo();
+		try {
+			const api = join(w.root, "api");
+			execFileSync("git", ["clone", "-q", await scratchOrigin(w.root, "api"), api], { stdio: "pipe" });
+			execFileSync("git", ["-C", api, "checkout", "-q", "-b", "ticket"]);
+			const hooks = await writeGuardHooks(w.repo, join(w.root, "run"), "T-1", "ticket", [api]);
+			const git = (...args: string[]) => {
+				try {
+					execFileSync("git", ["-C", api, ...args], { stdio: "pipe", env: { ...process.env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: hooks } });
+					return true;
+				} catch {
+					return false;
+				}
+			};
+			assert.ok(git("commit", "-q", "--allow-empty", "-m", "on the ticket's branch"), "a commit on the ticket's branch");
+			assert.equal(git("branch", "other-ticket"), false, "another branch is refused");
+			assert.equal(git("update-ref", "refs/heads/main", "HEAD"), false, "the base branch is refused");
+		} finally {
+			await rm(w.root, { recursive: true, force: true });
+		}
 	});
 });

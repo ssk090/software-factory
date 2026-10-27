@@ -11,6 +11,7 @@ Input in RUN_DIR (see the Context line): ticket.md, comments.md.
 
 Do this:
 1. Read ticket.md and comments.md. Read the repo conventions files (and GLOSSARY.md or ADRs if present) and the code the ticket touches.
+   If the prompt names backend repos, read the ones the ticket touches. When the ticket needs a backend change, the spec names the repo, the endpoint, DTO or table, and the change.
 2. Write RUN_DIR/spec.md: goal, scope, out of scope, acceptance criteria, edge cases, risks, open questions.
    Write it in Simplified Technical English (the rules follow below). Short sentences, one meaning for one word, active voice.
    Add a "Diagram" section with one Mermaid diagram in a ```mermaid code block. It shows the behaviour the ticket changes:
