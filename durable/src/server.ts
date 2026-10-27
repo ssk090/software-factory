@@ -203,6 +203,15 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 			}
 		}
 		if (method === "GET" && area === "graph") return json(res, 200, await factory.graph());
+		if (area === "lanes" && method === "GET") return json(res, 200, await factory.lanesView());
+		if (area === "lanes" && method === "POST") {
+			const input = await body(req);
+			const role = str(input.role, "role", 40);
+			const model = typeof input.model === "string" ? input.model : null;
+			const reset = typeof input.reset === "string" ? input.reset : undefined;
+			if (model === null && reset === undefined) throw new HttpFail(400, "give model or reset");
+			return json(res, 200, await factory.setLaneModel(role, model, reset).catch((e: unknown) => { throw new HttpFail(400, e instanceof Error ? e.message : String(e)); }));
+		}
 		if (area === "tickets" && key !== undefined) {
 			const ticketId = id(key);
 			if (method === "GET" && action === undefined) {
@@ -211,6 +220,7 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 				return json(res, 200, detail);
 			}
 			if (method === "GET" && action === "events") return stream(res, url, ticketId);
+			if (method === "GET" && action === "models") return json(res, 200, await factory.ticketModels(ticketId));
 			// What one agent step changed: GET /api/tickets/:id/steps/:step/diff
 			if (method === "GET" && action === "steps" && parts[5] === "diff") {
 				const ticket = await factory.ticket(ticketId);
@@ -236,7 +246,11 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 			if (method === "POST") {
 				const input = await body(req);
 				if (action === "start") {
-					return json(res, 200, await factory.start(ticketId, { gate: input.gate !== false, build: input.build === true, fresh: input.fresh === true, autoApprove: input.autoApprove === true }));
+					return json(res, 200, await factory.start(ticketId, { gate: input.gate !== false, build: input.build === true, fresh: input.fresh === true, autoApprove: input.autoApprove === true, pickModels: input.pickModels === true }));
+				}
+				if (action === "models") {
+					const change = { role: typeof input.role === "string" ? input.role : undefined, model: typeof input.model === "string" ? input.model : null, confirm: input.confirm === true };
+					return json(res, 200, await factory.setTicketModels(ticketId, change).catch((e: unknown) => { throw new HttpFail(400, e instanceof Error ? e.message : String(e)); }));
 				}
 				if (action === "approve") return json(res, 200, await factory.approve(ticketId, typeof input.note === "string" ? input.note.slice(0, 20_000) : ""));
 				if (action === "stop") return json(res, 200, (await factory.stop(ticketId), { ok: true }));

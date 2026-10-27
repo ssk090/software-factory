@@ -122,6 +122,14 @@ export type Ticket = {
 	revisions?: Revision[];
 	/** The gate approves the spec and plan itself: the run goes from the ticket to the PR without you. */
 	autoApprove?: boolean;
+	/** Your model for a role on this ticket (role -> "<provider>/<model>"): first in that role's chain. */
+	models?: Record<string, string>;
+	/** Jev's routing for this ticket: where each chain starts, and what Jev said (null: no Jev). */
+	route?: { start: number; jev: string | null } | null;
+	/** The run waits at "Select models" until you confirm the models (the dashboard's switch). */
+	pickModels?: boolean;
+	/** You confirmed the models for this run. */
+	modelsChosen?: boolean;
 	/** What happened, oldest first (at most MAX_EVENTS). Tickets from before events have none. */
 	events: TicketEvent[];
 	created: number;

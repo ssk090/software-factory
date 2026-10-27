@@ -26,7 +26,7 @@ import { addEvent, type Issue, SentryInbox, StepDoc, type StepUsage, type Ticket
 import { dockerEnv, type EnvFactory, nodeEnvWith, reapOrphans, removeContainer } from "./env.ts";
 import { cellEnv, git, gitIdentity, removeWorktree, useOriginUrl } from "./git.ts";
 import type { GitHost } from "./github.ts";
-import type { Lanes } from "./lanes.ts";
+import { chain, type Lanes, modelName, parseModel, plannedModels, roles, saveLanes, setModel } from "./lanes.ts";
 import { createPipeline, duration, type PipelineInput, sumUsage } from "./pipeline.ts";
 import { FactoryAgent } from "./roles.ts";
 import { createSentrySync, mergeSync, type SentryApi, ticketFor } from "./sentry.ts";
@@ -47,7 +47,10 @@ const Loops = defineDoc<{ sentry: number | null; pickup: number | null }>({
 export type HostDeps = {
 	readonly config: Config;
 	readonly models: Models;
+	/** Changed in place when you save a model in Settings: the next step uses it. */
 	readonly lanes: Lanes;
+	/** Where Settings saves the lanes (LANES_FILE). None: the change lasts until a restart. */
+	readonly lanesFile?: string;
 	readonly tracker: Tracker;
 	readonly gitHost: GitHost;
 	readonly sentry: SentryApi | null;
@@ -63,7 +66,7 @@ export type HostDeps = {
 	readonly readOnly?: boolean;
 };
 
-export type StartOptions = { gate?: boolean; build?: boolean; fresh?: boolean; autoApprove?: boolean };
+export type StartOptions = { gate?: boolean; build?: boolean; fresh?: boolean; autoApprove?: boolean; pickModels?: boolean };
 
 /** The pause reason the factory sets when the daily budget runs out; it continues them when it is back. */
 const BUDGET = "daily budget";
@@ -197,7 +200,7 @@ export class Factory {
 			const run = ticket.state === "in_review" ? { ...input, fresh: true } : input;
 			const taskId = await tx.createTask(Pipeline, run, { ownership: { kind: "conversation" }, background: true });
 			const autoApprove = options.autoApprove ?? false;
-			Object.assign(ticket, { taskId, state: "queued", phase: "queued", blocked: null, paused: null, gone: false, mode: input.build ? "build" : "full", autoApprove });
+			Object.assign(ticket, { taskId, state: "queued", phase: "queued", blocked: null, paused: null, gone: false, mode: input.build ? "build" : "full", autoApprove, pickModels: options.pickModels ?? false, modelsChosen: false });
 			const gated = input.gate ? (autoApprove ? "spec, approved automatically" : "spec, then your approval") : "the whole pipeline";
 			const how = [input.build ? "build of the approved spec" : gated, run.fresh ? "fresh" : ""].filter(Boolean).join(", ");
 			addEvent(ticket, { kind: "run", phase: "start", text: `Run started: ${how}` });
@@ -247,6 +250,71 @@ export class Factory {
 		});
 		this.wake(ticketId);
 		return (await this.ticket(ticketId))!;
+	}
+
+	/** The model lanes, the roles, and each model pi-ai knows with whether its provider has a login. */
+	async lanesView() {
+		const { models, lanes } = this.deps;
+		const login = new Map<string, boolean>();
+		const catalog = [];
+		for (const m of models.getModels()) {
+			if (!login.has(m.provider)) login.set(m.provider, (await models.getAuth(m.provider)) !== undefined);
+			catalog.push({ id: `${m.provider}/${m.id}`, name: m.name, login: login.get(m.provider)! });
+		}
+		return { lanes: lanes.lanes, aliases: lanes.aliases, roles: roles(lanes), catalog };
+	}
+
+	/**
+	 * Settings: put `model` first in the role's chain for every ticket, from the next step on. `model`
+	 * null: the role goes back to `resetTo`'s lane. Saved to LANES_FILE.
+	 */
+	async setLaneModel(role: string, model: string | null, resetTo?: string) {
+		const { lanes } = this.deps;
+		if (!roles(lanes).includes(role)) throw new Error(`no role "${role}"`);
+		if (model !== null) this.knownModel(model);
+		const before = chain(lanes, role).map(modelName)[0] ?? "none";
+		const next = setModel(lanes, role, model, resetTo);
+		if (this.deps.lanesFile) await saveLanes(this.deps.lanesFile, next);
+		Object.assign(lanes, next);
+		this.deps.log?.(`settings: ${role} ${before} -> ${model ?? `same as ${resetTo}`}`);
+		return this.lanesView();
+	}
+
+	/** A ticket's models: Jev's routing, your choices, and the model each role starts on. */
+	async ticketModels(ref: string) {
+		const ticket = await this.ticket(await this.deps.tracker.resolve(ref));
+		if (ticket === undefined) throw new Error(`the factory has not seen ticket ${ref}`);
+		const planned = await plannedModels({ lanes: this.deps.lanes, models: this.deps.models, overrides: ticket.models, start: ticket.route?.start ?? 0 });
+		return { route: ticket.route ?? null, overrides: ticket.models ?? {}, pickModels: ticket.pickModels === true, chosen: ticket.modelsChosen === true, planned };
+	}
+
+	/** Your model for one role of a ticket (null: back to the default), or confirm the models so the run goes on. */
+	async setTicketModels(ref: string, change: { role?: string; model?: string | null; confirm?: boolean }) {
+		const ticketId = await this.deps.tracker.resolve(ref);
+		if ((await this.ticket(ticketId)) === undefined) throw new Error(`the factory has not seen ticket ${ref}`);
+		const { role, model, confirm } = change;
+		if (role !== undefined && !roles(this.deps.lanes).includes(role)) throw new Error(`no role "${role}"`);
+		if (typeof model === "string") this.knownModel(model);
+		await this.edit(ticketId, (t) => {
+			if (role !== undefined) {
+				const own = { ...(t.models ?? {}) };
+				if (typeof model === "string") own[role] = model;
+				else delete own[role];
+				t.models = own;
+				addEvent(t, { kind: "models", text: typeof model === "string" ? `You set ${role} to ${model}` : `${role} is back on its default model` });
+			}
+			if (confirm === true && t.modelsChosen !== true) {
+				t.modelsChosen = true;
+				addEvent(t, { kind: "models", text: "Models confirmed" });
+			}
+		});
+		this.wake(ticketId);
+		return this.ticketModels(ticketId);
+	}
+
+	private knownModel(model: string) {
+		const ref = parseModel(model);
+		if (ref === null || this.deps.models.getModel(ref.provider, ref.modelId) === undefined) throw new Error(`unknown model "${model}"`);
 	}
 
 	/** Stop a ticket: its pipeline and its running step are aborted; the worktree and branch stay. */

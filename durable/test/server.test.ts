@@ -20,7 +20,7 @@ describe("server", { timeout: 60_000 }, () => {
 		root = w.root;
 		const config = testConfig(w.repo, w.data, { DASH_PORT: "0" });
 		const { models } = fauxAgents({ coderSleep: 3 });
-		factory = await Factory.open({ config, models, lanes, tracker: new FakeTracker(), gitHost: new FakeGitHost(), sentry: null, log: () => {}, gatePollMs: 50, admitPollMs: 50 });
+		factory = await Factory.open({ config, models, lanes: structuredClone(lanes), tracker: new FakeTracker(), gitHost: new FakeGitHost(), sentry: null, log: () => {}, gatePollMs: 50, admitPollMs: 50 });
 		const started = await startServer(factory, { dashboardFile: join(here, "durable", "dashboard", "index.html"), tokenFile: join(w.data, "state", "dash.token") });
 		url = started.url;
 		token = started.token;
@@ -62,6 +62,42 @@ describe("server", { timeout: 60_000 }, () => {
 		assert.equal(wrong.status, 403);
 		const form = await fetch(`${url}/api/tickets/T-1/start`, { method: "POST", headers: { "Content-Type": "text/plain", "X-Factory-Token": token }, body: "{}" });
 		assert.equal(form.status, 415);
+	});
+
+	it("Settings: lists the roles and models, sets a role's model live, and refuses a bad one", async () => {
+		const view = await (await fetch(`${url}/api/lanes`)).json();
+		assert.ok(view.roles.includes("plan"));
+		assert.ok(view.catalog.some((m: { id: string; login: boolean }) => m.id === "faux/other-1" && m.login));
+		const noToken = await fetch(`${url}/api/lanes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: "plan", model: "faux/other-1" }) });
+		assert.equal(noToken.status, 403);
+		assert.equal((await post("/api/lanes", { role: "plan", model: "bad-model" })).status, 400);
+		assert.equal((await post("/api/lanes", { role: "nope", model: "faux/other-1" })).status, 400);
+		const set = await (await post("/api/lanes", { role: "plan", model: "faux/other-1" })).json();
+		assert.deepEqual(set.lanes.plan, ["faux/other-1", "faux/faux-1"]);
+		assert.deepEqual(factory.deps.lanes.lanes.plan, ["faux/other-1", "faux/faux-1"], "the running factory uses it");
+		const reset = await (await post("/api/lanes", { role: "plan", reset: "spec" })).json();
+		assert.equal(reset.aliases.plan, "spec");
+	});
+
+	it("with Choose models on, the run waits at Select models with your model, then goes on", async () => {
+		await post("/api/tickets/T-7/start", { gate: true, pickModels: true });
+		const ticket = async () => (await (await fetch(`${url}/api/tickets/T-7`)).json()).ticket;
+		for (let i = 0; i < 200 && (await ticket()).phase !== "models"; i++) await new Promise((r) => setTimeout(r, 50));
+		assert.equal((await ticket()).phase, "models");
+		assert.equal((await post("/api/tickets/T-7/models", { role: "spec", model: "bad" })).status, 400);
+		const mine = await (await post("/api/tickets/T-7/models", { role: "spec", model: "faux/other-1" })).json();
+		assert.deepEqual(mine.planned.find((p: { role: string }) => p.role === "spec"), { role: "spec", model: "faux/other-1", source: "you" });
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal((await ticket()).phase, "models", "still waits for you");
+		await post("/api/tickets/T-7/models", { confirm: true });
+		let t = await ticket();
+		for (let i = 0; i < 400 && !t.steps.some((s: { role: string }) => s.role === "spec"); i++) {
+			await new Promise((r) => setTimeout(r, 50));
+			t = await ticket();
+		}
+		assert.equal(t.steps.find((s: { role: string }) => s.role === "spec").model, "faux/other-1");
+		assert.ok(t.events.some((e: { kind: string; text: string }) => e.kind === "models" && /Default models/.test(e.text)));
+		await post("/api/tickets/T-7/stop", {});
 	});
 
 	it("starts a ticket, streams its running step, takes a steer, and stops it", async () => {
