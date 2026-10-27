@@ -10,7 +10,8 @@ Kill the process at any moment and the next start continues each ticket where it
 
     Sentry issue ─┐
                   ├─> ticket -> spec -> plan -> (you approve) -> tests (red) -> code (green) -> docs
-    sprint task ──┘      -> PR summary -> draft PR -> review <-> fix -> PR summary again -> judge -> PR ready
+    sprint task ──┘      -> browser check (UI, RUNTIME_CHECK=1) -> PR summary -> draft PR
+                         -> review <-> fix -> PR summary again -> judge -> PR ready
 
 It is spec-driven: the spec's numbered acceptance criteria become failing tests before any code
 exists, the coder makes them pass, and the reviewer and the judge check every criterion. The factory
@@ -120,7 +121,7 @@ The ticket's status in ClickUp shows where it is; the factory's own state is in 
 
 The coder and the fixer follow [ponytail](https://github.com/dietrichgebert/ponytail) (vendored in `skills/ponytail/`): the smallest complete change. Tests and code follow [Superpowers](https://github.com/obra/superpowers) (vendored in `skills/superpowers/`): the test writer, the coder and the fixer use `test-driven-development` and `verification-before-completion`, the coder and the fixer `systematic-debugging`, the planner `writing-plans`, and the fixer `receiving-code-review`.
 
-Agents (`agents/*.md`, see `agents/README.md`): spec writer, planner, test writer, coder, docs writer (delete `docs.md` to turn it off), PR summary writer, code reviewer, fixer, judge. Each writes the files its prompt names into the run folder (`runs/<ticket>/`); the pipeline checks them before it moves on.
+Agents (`agents/*.md`, see `agents/README.md`): spec writer, planner, test writer, coder, docs writer, runtime checker, PR summary writer, code reviewer, fixer, judge. Delete `docs.md` to turn the docs writer off. The runtime checker runs only when `RUNTIME_CHECK=1` and the change touches UI files. Each writes the files its prompt names into the run folder (`runs/<ticket>/`). The pipeline checks them before it moves on.
 
 ### Ticket cells: what keeps tickets apart
 | Shared thing | What keeps tickets apart |
@@ -235,6 +236,7 @@ Create the tracker statuses named in `config.env`, or map them to existing ones.
 - **Your sprint:** `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder) or `CLICKUP_SPRINT_LIST_ID`.
 - **Sentry:** `SENTRY_ORG`, `SENTRY_PROJECTS`, `SENTRY_CLICKUP_LIST_ID`, and `ff login SENTRY_AUTH_TOKEN`.
 - **The repo:** `REPO`, `BASE`, `SETUP_CMD` (e.g. `npm ci`) and `VERIFY_CMD` (e.g. `npm test`).
+- **A browser check of UI changes:** `RUNTIME_CHECK=1`. It uses the Chromium in the sandbox image and adds `agents/runtime.md` before the review.
 - **A second model provider** (e.g. `ff login OPENAI_API_KEY`), so code is reviewed by another model family.
 
 Every setting, with its default, is in `config.example.env`.

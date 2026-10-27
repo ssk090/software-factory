@@ -124,7 +124,7 @@ export class FakeGitHost implements GitHost {
 
 export const lanes: Lanes = {
 	lanes: { spec: ["faux/faux-1"], code: ["faux/faux-1"], review: ["faux/other-1"] },
-	aliases: { plan: "spec", test: "code", docs: "code", "pr-summary": "code", fix: "code", judge: "review", coordinate: "code" },
+	aliases: { plan: "spec", test: "code", docs: "code", "pr-summary": "code", fix: "code", judge: "review", coordinate: "code", runtime: "review" },
 };
 
 const text = (message: Message | undefined) =>
@@ -230,6 +230,7 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 			return bash(`echo ok > fixed.txt && git add fixed.txt && git commit -qm "fix: the pre-push check" && ${report("The pre-push check wanted fixed.txt; added it.", "Run the pre-push checks before you finish.")}`);
 		}
 		if (prompt.includes("# Agent: docs writer")) return write(`${run}/docs.md`, "No docs change needed\n");
+		if (prompt.includes("# Agent: runtime checker")) return write(`${run}/runtime.md`, "Checked the form in the browser.\nVERDICT: PASS\n");
 		if (prompt.includes("# Agent: PR summary")) return bash(`echo "title ${round}" > ${run}/pr-title.txt && echo body > ${run}/pr-body.md`);
 		if (prompt.includes("# Agent: code reviewer")) {
 			// Round 1 also leaves an inline comment with a one-click suggestion (and one malformed entry the factory drops).
