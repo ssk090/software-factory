@@ -688,6 +688,35 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("does not hold a cell while the gate or Select models waits for you", async () => {
+		const w = await world();
+		const factory = await Factory.open(w.deps);
+		try {
+			// MAX_PARALLEL is 1 in the test config: one waiting ticket would block every other.
+			await factory.start("T-66", { gate: true });
+			await waitFor(async () => (await factory.ticket("T-66"))?.state === "waiting_approval", "the gate");
+			assert.equal((await factory.ticket("T-66"))?.slot, null, "the gate gives the cell back");
+			await factory.start("T-67", { gate: false });
+			await waitFor(async () => (await factory.ticket("T-67"))?.slot !== null, "the second ticket's cell", 5000);
+			const other = await settle(factory, "T-67");
+			assert.equal(other.state, "in_review", other.blocked ?? "");
+			await factory.approve("T-66");
+			const t = await settle(factory, "T-66");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.equal(t.slot, null);
+			// Select models gives the cell back too.
+			await factory.start("T-68", { gate: false, pickModels: true });
+			await waitFor(async () => (await factory.ticket("T-68"))?.phase === "models", "Select models");
+			assert.equal((await factory.ticket("T-68"))?.slot, null, "Select models gives the cell back");
+			await factory.setTicketModels("T-68", { confirm: true });
+			const picked = await settle(factory, "T-68");
+			assert.equal(picked.state, "in_review", picked.blocked ?? "");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);

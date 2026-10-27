@@ -801,6 +801,16 @@ export function createPipeline(deps: PipelineDeps) {
 
 
 	/** A reader only reads: HEAD must not move, and the worktree must hold only committed work. */
+	/** Give the ticket's cell back: the gate and Select models wait for a person, not for the machine. */
+	const releaseSlot = async (runtime: R, context: Context, ticket: Ticket) => {
+		if (ticket.slot === null) return;
+		await runtime.commit(async (tx) => {
+			await editTicket(tx, ticket.id, (t) => {
+				t.slot = null;
+			});
+			return undefined;
+		}, context);
+	};
 	const readOnly = async (ticket: Ticket, stepHead: string | null, label: string) => {
 		if (stepHead !== null && (await head(ticket.worktree!)) !== stepHead) throw new Blocked(`${label} committed to ${ticket.branch}, but it may only read`);
 		// The file-tool guard does not see a write through bash: the worktree itself is the proof.
@@ -957,7 +967,7 @@ export function createPipeline(deps: PipelineDeps) {
 			// Jev routes the ticket once a run. Then, with "Choose models" on, the run waits for you.
 			let ticket = await ticketOf(task, runtime, context);
 			const polls = task.state.checkpoint.polls;
-			if (polls === 0) {
+			if (polls === 0 && ticket.route == null) {
 				const answers = await askJev(`${ticket.title}\n\n${await readText(join(ticket.run!, "ticket.md"))}`);
 				const start = startIndex(answers);
 				const planned = await plannedModels({ lanes, models, overrides: ticket.models, start });
@@ -974,8 +984,15 @@ export function createPipeline(deps: PipelineDeps) {
 				ticket = await ticketOf(task, runtime, context);
 			}
 			if (ticket.pickModels === true && ticket.modelsChosen !== true) {
+				// A person chooses the models: the cell goes back to the queue while it waits.
+				await releaseSlot(runtime, context, ticket);
 				await advance(task, runtime, context, { polls: polls + 1 });
 				await nap(gatePollMs, runtime.signal, ticket.id);
+				return;
+			}
+			// It waited without a cell: take one again before a step runs commands in it.
+			if (ticket.slot === null) {
+				await advance(task, runtime, context, { phase: "admit", polls: 0 });
 				return;
 			}
 			await advance(task, runtime, context, { phase: "worktree" });
@@ -1086,6 +1103,8 @@ export function createPipeline(deps: PipelineDeps) {
 			// Waits durably for you: Approve on the dashboard (`ff approve`), or move the ticket to S_APPROVED.
 			// With auto-approve on, it approves itself.
 			let ticket = await ticketOf(task, runtime, context);
+			// The gate waits for a person: the cell goes back to the queue, so other tickets run.
+			await releaseSlot(runtime, context, ticket);
 			const polls = task.state.checkpoint.polls;
 			// A change you asked for on the spec or the plan comes before your approval.
 			const pending = (ticket.revisions ?? []).find((r) => r.status === "queued" || r.status === "running");
@@ -1129,7 +1148,8 @@ export function createPipeline(deps: PipelineDeps) {
 			// A note that changes behaviour must reach spec.md and plan.md before the build.
 			await applyApprovalNote(runtime, context, ticket);
 			await setStatus(runtime, context, ticket, config.statuses.working);
-			await advance(task, runtime, context, { phase: "setup", polls: 0 }, (t) => {
+			// It held no cell while it waited: take one again, then the build goes on from setup.
+			await advance(task, runtime, context, { phase: ticket.slot === null ? "admit" : "setup", polls: 0 }, (t) => {
 				t.state = "running";
 			});
 		},
