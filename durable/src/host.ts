@@ -23,7 +23,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { backendCache, backendsDir, backendTree, removeBackendTree } from "./backends.ts";
 import type { Config } from "./config.ts";
 import { addEvent, type Issue, SentryInbox, StepDoc, type StepUsage, type Ticket, TicketDoc, TicketIndex } from "./docs.ts";
-import { dockerEnv, type EnvFactory, nodeEnvWith, reapOrphans, removeContainer } from "./env.ts";
+import { containerName, dockerEnv, type EnvFactory, nodeEnvWith, reapOrphans, removeContainer } from "./env.ts";
 import { cellEnv, git, gitIdentity, removeWorktree, useOriginUrl } from "./git.ts";
 import type { GitHost } from "./github.ts";
 import { chain, type Lanes, modelName, parseModel, plannedModels, roles, saveLanes, setModel } from "./lanes.ts";
@@ -70,9 +70,6 @@ export type StartOptions = { gate?: boolean; build?: boolean; fresh?: boolean; a
 
 /** The pause reason the factory sets when the daily budget runs out; it continues them when it is back. */
 const BUDGET = "daily budget";
-
-/** The ticket's sandbox container (SANDBOX=docker), or null. */
-export const containerName = (config: Config, cid: string) => (config.sandbox === "docker" ? `factory-${cid.toLowerCase().replace(/[^a-z0-9]/g, "-")}` : null);
 
 export class Factory {
 	readonly harness: Harness;
