@@ -138,6 +138,8 @@ export class Metrics {
 		this.prevSystem = this.readSystem();
 		this.prevAt = this.now();
 		this.expected = this.prevAt + this.sampleMs;
+		// A first point at once: a page opened in the first second already has a start.
+		this.sample(this.prevAt);
 		this.timer = setInterval(() => this.tick(), this.sampleMs);
 		this.timer.unref();
 	}
