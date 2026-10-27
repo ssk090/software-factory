@@ -1059,7 +1059,7 @@ const STAGES = [
   { label: "Tests", phases: ["setup", "verify-base", "test"] },
   { label: "Fix", phases: ["code", "verify-code", "docs"] },
   // One pill in three parts: opening the PR, the first review, then the fixes and the second review (or the judge).
-  { label: "Pull request", phases: ["pr-summary", "pr", "review", "fix", "push-fix", "pr-summary-2", "judge"],
+  { label: "Pull request", phases: ["sync-base", "pr-summary", "pr", "review", "fix", "push-fix", "pr-summary-2", "judge"],
     parts: [{ label: "Pull request" }, { label: "Review" }, { label: "Review 2" }] },
   { label: "Ready", phases: ["report"] },
 ];

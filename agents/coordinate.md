@@ -61,6 +61,11 @@ Do this:
    - The reason was a tool or the environment that failed (the sandbox stopped, a command was killed, the shell was lost) and it works now: finish the coder's job. Check the work against spec.md and the tests, run the tests and the checks the coder could not run, fix what they find, and commit with the ticket ID. Do not redo work that is done.
    - The reason is a real question about what to build (the spec is unclear or wrong, a decision a person must make): do not guess. Go to step 8, and keep the coder's question.
 
+5d. A failure of kind `conflict` (the base moved and `git merge origin/BASE` stopped on a conflict; failure-N.md names the files):
+   - Resolve every file. Keep both intents: the ticket's change and the base's change, as the spec and the base code ask.
+   - `git add` the resolved files and complete the merge: `git commit --no-edit`. Do not abort the merge.
+   - Run VERIFY_CMD. The factory merges again after the repair (it is already in) and goes on.
+
 6. Prove it. Run the exact command from step 1 again, and the tests in tests.md for what you touched. Work until both pass, or until you know that you cannot make them pass. Run VERIFY_CMD (Context line) when it is set. Show the before and after in repair-N.md.
 
 7. Write RUN_DIR/repair-N.md:
