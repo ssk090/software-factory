@@ -108,6 +108,12 @@ export class FakeGitHost implements GitHost {
 	async addLabel(_w: string, pr: string, label: string) {
 		this.log.push(`label ${pr} ${label}`);
 	}
+	/** Set to make assigning fail (an unknown login, no access). */
+	assignFails = false;
+	async addAssignees(_w: string, pr: string, logins: readonly string[]) {
+		if (this.assignFails) throw new Error(`could not assign ${logins.join(",")}`);
+		this.log.push(`assign ${pr} ${logins.join(",")}`);
+	}
 	async comment(_w: string, pr: string, body: string) {
 		this.log.push(`comment ${pr} ${body.split("\n").at(-2) ?? ""}`.trim());
 	}
