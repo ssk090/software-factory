@@ -542,6 +542,52 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("does not let VERDICT: PASS override a P1 finding", async () => {
+		const w = await world({ reviewBody: "P1 the retry drops the payload\n\nVERDICT: PASS\n" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-56", { gate: false });
+			const t = await settle(factory, "T-56");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.deepEqual(t.reviews.map((r) => r.verdict), ["FIX", "PASS"]);
+			assert.ok(t.steps.some((s) => s.name === "fix-1-1"), "the fixer ran");
+			assert.ok(t.events.some((e) => e.level === "warn" && /VERDICT line says PASS, but this finding is P1 or P2: P1 the retry drops the payload/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("takes a verdict that is not the last line as FIX", async () => {
+		const w = await world({ reviewBody: "All good.\nVERDICT: PASS\nOne more note after the verdict.\n" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-57", { gate: false });
+			const t = await settle(factory, "T-57");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.deepEqual(t.reviews.map((r) => r.verdict), ["FIX", "PASS"]);
+			assert.ok(t.events.some((e) => e.level === "warn" && /the last line is not VERDICT: PASS or VERDICT: FIX: One more note after the verdict/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps VERDICT: PASS when the review says it has no P1 or P2", async () => {
+		const w = await world({ reviewBody: "No P1 or P2 findings.\n\nVERDICT: PASS\n" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-58", { gate: false });
+			const t = await settle(factory, "T-58");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.deepEqual(t.reviews.map((r) => r.verdict), ["PASS"]);
+			assert.ok(!t.steps.some((s) => s.name === "fix-1-1"), "no fixer ran");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);

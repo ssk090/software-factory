@@ -183,6 +183,8 @@ export type Behaviour = {
 	testCmd?: string;
 	/** The test writer leaves its test uncommitted: this bash replaces its commit. */
 	testUncommitted?: string;
+	/** The body of review-1.md (a test of the verdict rules). */
+	reviewBody?: string;
 };
 
 /**
@@ -274,8 +276,9 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 		if (prompt.includes("# Agent: code reviewer")) {
 			// Round 1 also leaves an inline comment with a one-click suggestion (and one malformed entry the factory drops).
 			const inline = round === 1 ? JSON.stringify([{ path: "file.txt", line: 1, body: "🔴 issue (blocking): **x**\n\n```suggestion\nfix\n```" }, { path: "file.txt" }]) : "[]";
-			return bash(`${behaviour.reviewBash ? `${behaviour.reviewBash}; ` : ""}printf '%s' '${inline}' > ${run}/review-${round}.comments.json && printf 'P1 x\nVERDICT: %s\n' ${round === 1 ? "FIX" : "PASS"} > ${run}/review-${round}.md`);
-		}
+			if (round === 1 && behaviour.reviewBody !== undefined) return bash(`${behaviour.reviewBash ? `${behaviour.reviewBash}; ` : ""}printf '%s' '${inline}' > ${run}/review-${round}.comments.json && printf '%b' ${JSON.stringify(behaviour.reviewBody)} > ${run}/review-${round}.md`);
+			const verdict = round === 1 ? 'P1 x\nVERDICT: FIX\n' : 'VERDICT: PASS\n';
+			return bash(`${behaviour.reviewBash ? `${behaviour.reviewBash}; ` : ""}printf '%s' '${inline}' > ${run}/review-${round}.comments.json && printf '${verdict}' > ${run}/review-${round}.md`);		}
 		if (prompt.includes("# Agent: fixer")) return bash(`echo fix >> file.txt && git commit -qam "fix"`);
 		if (prompt.includes("# Agent: judge")) {
 			return write(`${run}/judge.json`, JSON.stringify({ score: 4, summary: "done", criteria: [{ status: "met" }], hallucinations: [] }));

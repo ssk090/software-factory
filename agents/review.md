@@ -16,7 +16,7 @@ Do this:
 3. If earlier review-N.md files exist, check each of their P1 and P2 findings is fixed.
    If RUN_DIR/verify-failed.md exists, the factory itself ran VERIFY_CMD on this HEAD and it failed: that is a P1. When the file also quotes a failure on the base branch, the base was already red. Compare the two tails. A failure that the base does not have (a new failing test, for example) is a P1.
 4. Write RUN_DIR/review-<ROUND>.md. If a review skill uses its own severity tiers, map them: 🚨 and 🔴 = P1, 🟡 = P2, 🟢 = P3, and keep its other sections (for example a Confidence Score) above the verdict. Label each finding P1 (breaks or unsafe), P2 (major), or P3 (minor). Give file:line, the problem, and the fix. Skip pure style nits.
-5. The LAST line must be exactly VERDICT: PASS (no P1 or P2) or VERDICT: FIX (any P1 or P2).
+5. The LAST line must be exactly VERDICT: PASS (no P1 or P2) or VERDICT: FIX (any P1 or P2). A P1 or P2 finding in the body makes the verdict FIX, also when you write PASS.
 6. Write RUN_DIR/review-<ROUND>.comments.json: the inline comments for the PR, a JSON array (write `[]` when there are none). The factory posts them with review-<ROUND>.md as one PR review; you do not post anything yourself, even when a skill says to.
    - Only for a root cause or a bug you found and verified (P1, or a P2 that is a real defect with a failure scenario), or a question about intent. Everything else stays in review-<ROUND>.md. At most 5, each point once, at the line that needs the fix.
    - Each entry: `{"path": "<repo-relative path>", "line": <line in the new file>, "body": "<markdown>"}`, and `"start_line": <n>` for a range. Every line must be inside a diff hunk of the new code: check with `git diff -U0 origin/<base>...HEAD -- <path>`.
