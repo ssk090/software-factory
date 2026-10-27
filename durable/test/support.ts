@@ -145,8 +145,8 @@ export class FakeGitHost implements GitHost {
 }
 
 export const lanes: Lanes = {
-	lanes: { spec: ["faux/faux-1"], code: ["faux/faux-1"], review: ["faux/other-1"] },
-	aliases: { plan: "spec", test: "code", docs: "code", "pr-summary": "code", fix: "code", judge: "review", coordinate: "code", runtime: "review" },
+	lanes: { spec: ["faux/faux-1"], code: ["faux/faux-1"], review: ["faux/other-1"], judge: ["faux/other-1"] },
+	aliases: { plan: "spec", test: "code", docs: "code", "pr-summary": "code", fix: "code", coordinate: "code", runtime: "review" },
 };
 
 const text = (message: Message | undefined) =>
@@ -173,6 +173,7 @@ export type Behaviour = {
 	coderGivesUp?: string;
 	/** The coder also commits a change in this backend repo (its worktree comes from the Context line). */
 	coderBackend?: string;
+
 	/** Extra bash for the reviewer before it answers (e.g. an uncommitted change in the worktree). */
 	reviewBash?: string;
 	/** Extra bash for the docs writer before it answers (e.g. deleting a frozen test). */
@@ -185,6 +186,9 @@ export type Behaviour = {
 	testUncommitted?: string;
 	/** The body of review-1.md (a test of the verdict rules). */
 	reviewBody?: string;
+
+	/** Raw content of judge.json (a test of the judge's parser). */
+	judgeRaw?: string;
 };
 
 /**
@@ -281,7 +285,8 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 			return bash(`${behaviour.reviewBash ? `${behaviour.reviewBash}; ` : ""}printf '%s' '${inline}' > ${run}/review-${round}.comments.json && printf '${verdict}' > ${run}/review-${round}.md`);		}
 		if (prompt.includes("# Agent: fixer")) return bash(`echo fix >> file.txt && git commit -qam "fix"`);
 		if (prompt.includes("# Agent: judge")) {
-			return write(`${run}/judge.json`, JSON.stringify({ score: 4, summary: "done", criteria: [{ status: "met" }], hallucinations: [] }));
+			if (behaviour.judgeRaw !== undefined) return write(`${run}/judge.json`, behaviour.judgeRaw);
+			return write(`${run}/judge.json`, JSON.stringify({ score: 4, summary: "done", criteria: [{ id: "AC-1", text: "it works", status: "met", evidence: "ac1.test" }], spec_gaps: [], hallucinations: [], out_of_scope: [], prompt_suggestions: [{ agent: "code", problem: "thin tests", suggestion: "run the full suite before you commit" }] }));
 		}
 		return done(`unknown agent: ${prompt.slice(0, 80)}`);
 	};

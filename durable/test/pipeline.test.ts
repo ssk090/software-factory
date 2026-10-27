@@ -55,6 +55,9 @@ describe("pipeline", { timeout: 600_000 }, () => {
 			assert.equal(t.pr, "https://example.test/pr/1");
 			assert.deepEqual(t.reviews.map((r) => r.verdict), ["FIX", "PASS"]);
 			assert.equal(t.judge?.score, 4);
+			assert.equal(t.judge?.criteria[0]?.status, "met", "the full criteria are on the ticket");
+			assert.deepEqual(t.judge?.promptSuggestions.map((p) => p.agent), ["code"]);
+			assert.match(await readLessons(w.config.stateDir, "code"), /code: run the full suite before you commit/, "a prompt suggestion becomes a lesson");
 			assert.equal(t.slot, null, "the slot is given back");
 			const roles = t.steps.map((s) => s.name);
 			assert.deepEqual(roles, ["spec-1-1", "plan-1-1", "test-1-1", "code-1-1", "docs-1-1", "pr-summary-1-1", "review-1-1", "fix-1-1", "review-2-1", "pr-summary-2-1", "judge-1-1"]);
@@ -628,6 +631,54 @@ describe("pipeline", { timeout: 600_000 }, () => {
 			const code = t.steps.find((s) => s.name === "code-1-1")!;
 			assert.ok((code.pausedMs ?? 0) >= 3_600_000, `the outage is in pausedMs: ${code.pausedMs}`);
 			assert.ok(t.events.some((e) => /The factory was off for .*, so the running step gets that time back/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the PR a draft when the judge finds an unmet criterion", async () => {
+		const w = await world({ judgeRaw: JSON.stringify({ score: 4, summary: "one gap", criteria: [{ id: "AC-1", status: "not_met" }] }) });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-62", { gate: false });
+			const t = await settle(factory, "T-62");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.equal(t.judge?.criteria[0]?.status, "not_met");
+			assert.ok(!w.gitHost.log.includes("ready https://example.test/pr/1"), "the PR stays a draft");
+			assert.ok(t.events.some((e) => /PR stays a draft: The judge found 1 acceptance criterion\(s\) not met: AC-1/.test(e.text)));
+			assert.ok(t.events.some((e) => /Done: the PR stays a draft/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("reads a fenced judge.json and keeps a low score as a draft", async () => {
+		const raw = JSON.stringify({ score: 2, summary: "thin" });
+		const w = await world({ judgeRaw: `\`\`\`json\n${raw}\n\`\`\`\n` });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-63", { gate: false });
+			const t = await settle(factory, "T-63");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.equal(t.judge?.score, 2, "the fence did not stop the parse");
+			assert.ok(!w.gitHost.log.includes("ready https://example.test/pr/1"), "the PR stays a draft");
+			assert.ok(t.events.some((e) => /PR stays a draft: The judge scored the run 2\/5, below JUDGE_MIN_SCORE=3/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("says why a judge.json that is not valid JSON was skipped", async () => {
+		const w = await world({ judgeRaw: "not json" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-64", { gate: false });
+			const t = await settle(factory, "T-64");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.events.some((e) => /Judge skipped \(best effort: judge.json is not valid JSON/.test(e.text)));
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });

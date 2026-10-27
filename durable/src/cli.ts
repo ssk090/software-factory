@@ -274,6 +274,7 @@ async function doctor(config: Config) {
 	const lanes = await loadLanes(process.env.LANES_FILE || join(config.here, "durable", "lanes.json"));
 	const models = builtinModels();
 	let coder: string | null = null;
+	let reviewer: string | null = null;
 	for (const role of ["spec", "plan", "test", "code", "review", "fix", "judge"]) {
 		const { model } = await pickModel({ lanes, models, role, attempt: 1, avoidFamily: null, skip: () => null });
 		if (model === null) {
@@ -281,9 +282,14 @@ async function doctor(config: Config) {
 			continue;
 		}
 		if (role === "code") coder = family(model);
-		const other = coder !== null && (role === "review" || role === "judge") ? (await pickModel({ lanes, models, role, attempt: 1, avoidFamily: coder, skip: () => null })).model : model;
-		if (other === null) warn(`${role}: only ${modelName(model)} has a login, the coder's own family (${coder}): set another provider's key so code is reviewed by another family`);
-		else ok(`${role}: ${modelName(other)}`);
+		// The reviewer stays off the coder's family, and the judge stays off the reviewer's.
+		const avoid = role === "judge" ? reviewer : role === "review" ? coder : null;
+		const other = avoid === null ? model : (await pickModel({ lanes, models, role, attempt: 1, avoidFamily: avoid, skip: () => null })).model;
+		if (other === null) warn(`${role}: only ${modelName(model)} has a login, the same family as the ${role === "judge" ? "reviewer" : "coder"} (${avoid}): set another provider's key`);
+		else {
+			ok(`${role}: ${modelName(other)}`);
+			if (role === "review") reviewer = family(other);
+		}
 	}
 	const learned = config.verifyCmd ? await learnedVerify(config.stateDir, config.verifyCmd) : null;
 	if (learned) ok(`VERIFY_CMD runs as: ${learned} (learned by the coordinator, state/verify.json)`);

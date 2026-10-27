@@ -33,6 +33,17 @@ export type StepRecord = {
 
 export type StepUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; tokens: number; cost: number };
 
+/** The judge's full report (RUN_DIR/judge.json), stored on the ticket. */
+export type JudgeReport = {
+	score: number;
+	summary: string;
+	criteria: { id: string; text: string; status: string; evidence: string }[];
+	specGaps: string[];
+	hallucinations: { claim: string; where: string; why: string }[];
+	outOfScope: string[];
+	promptSuggestions: { agent: string; problem: string; suggestion: string }[];
+};
+
 /** A change you asked for on the spec or the plan at the gate: the agent that wrote the file makes it. */
 export type Revision = {
 	id: string;
@@ -101,7 +112,7 @@ export type Ticket = {
 	pr: string | null;
 	/** The draft PRs the factory opened in backend repos (BACKEND_REPOS), by repo name. */
 	backendPrs?: BackendPr[];
-	judge: { score: number; summary: string } | null;
+	judge: JudgeReport | null;
 	blocked: string | null;
 	steps: StepRecord[];
 	/**
