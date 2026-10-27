@@ -194,6 +194,7 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 
 		if (method === "GET" && area === "overview") return json(res, 200, await overview());
 		if (method === "GET" && area === "performance") return json(res, 200, await performance());
+		if (method === "GET" && area === "scoreboard") return json(res, 200, await factory.scoreboard());
 		if (method === "GET" && area === "stream") return state(res, url);
 		if (method === "GET" && area === "sprint") {
 			try {

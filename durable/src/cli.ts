@@ -11,12 +11,13 @@ import { type Config, loadConfig } from "./config.ts";
 import type { Ticket } from "./docs.ts";
 import { git, run, useOriginUrl } from "./git.ts";
 import { GitHubCli } from "./github.ts";
-import { Factory, type HostDeps } from "./host.ts";
+import { Factory, type HostDeps, type Scoreboard } from "./host.ts";
 import { requestJson } from "./http.ts";
 import { indexCommand } from "./index/cli.ts";
 import { loadIndexOptions } from "./index/options.ts";
 import { scheduleIndexUpdate } from "./index/sync.ts";
 import { chain, family, loadLanes, modelName, pickModel } from "./lanes.ts";
+import { duration } from "./pipeline.ts";
 import { learnedVerify, lessons } from "./lessons.ts";
 import { SentryClient } from "./sentry.ts";
 import { type ThrottleStatus, usd } from "./throttle.ts";
@@ -34,6 +35,7 @@ const USAGE = `usage: ff <command>
   pause <ticket>             pause a running ticket: it holds before its next phase and model request
   resume <ticket>            continue a paused ticket where it held
   status                     every ticket and what it is doing
+  scoreboard                 quality numbers: judge scores, criteria, review rounds, repairs, cost, time
   show <ticket>              one ticket: steps, files, PR
   logs <ticket>              everything that happened to a ticket, oldest first
   lessons                    what the coordinator learned from failures (state/lessons.md)
@@ -359,6 +361,18 @@ async function main() {
 			for (const [p, x] of Object.entries(u.today.providers)) console.log(`  ${p.padEnd(12)} ${usd(x.cost).padStart(8)} ${String(x.requests).padStart(6)} requests ${String(x.tokens).padStart(10)} tokens`);
 			console.log(`limits per provider: ${u.limits.rpm || "no"} requests/min, ${u.limits.tpm || "no"} tokens/min`);
 			for (const w of u.waiting) console.log(`  waiting: ${w.provider}: ${w.reason}`);
+			return;
+		}
+		case "scoreboard": {
+			const board = await readOnly(config, () => call<Scoreboard>(config, "/api/scoreboard"), (f) => f.scoreboard());
+			const avg = (v: number | null, digits = 1) => (v === null ? "–" : v.toFixed(digits));
+			console.log(`${board.tickets} runs, ${board.judged} judged, judge ${avg(board.avgScore)}/5, criteria met ${board.criteriaMet}/${board.criteriaTotal}`);
+			console.log(`review rounds to PASS ${avg(board.reviewRounds)}, repairs ${board.repairs}, failed checks ${board.verifyFailures}, human comments ${board.humanComments}, human rework ${board.humanRework}`);
+			console.log(`cost ${usd(board.cost)}, agent time ${duration(board.ms)}`);
+			for (const r of board.rows) {
+				const judge = r.judge === null ? "–" : `${r.judge}/5`;
+				console.log(`  ${r.cid.padEnd(12)} ${judge.padEnd(5)} ${`${r.met}/${r.criteria}`.padEnd(6)} reviews ${String(r.reviews).padEnd(2)}${r.pass ? "PASS" : "    "} repairs ${r.repairs}  checks ${r.verifies}  human ${r.human}`);
+			}
 			return;
 		}
 		case "status": {

@@ -142,6 +142,14 @@ export class FakeGitHost implements GitHost {
 	async state() {
 		return null;
 	}
+	/** PR feedback per URL, and the calls to feedback(). */
+	readonly prFeedback = new Map<string, { state: "MERGED" | "CLOSED" | "OPEN"; comments: string[]; head?: string }>();
+	readonly feedbackLog: string[] = [];
+	async feedback(_w: string, pr: string) {
+		this.feedbackLog.push(pr);
+		const found = this.prFeedback.get(pr);
+		return found === undefined ? null : { ...found, head: found.head ?? null };
+	}
 }
 
 export const lanes: Lanes = {

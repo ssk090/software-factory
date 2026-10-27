@@ -512,6 +512,7 @@
       <button data-tab="sprint" title="My sprint"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg><span class="label">My sprint</span><span id="n-sprint" class="count muted"></span></button>
       <button data-tab="runs" title="Factory runs"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg><span class="label">Factory runs</span><span id="n-runs" class="count muted"></span></button>
       <button data-tab="perf" title="Performance"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span class="label">Performance</span><span id="n-perf" class="count muted"></span></button>
+      <button data-tab="quality" title="Quality"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 12 3 3 6-6"/></svg><span class="label">Quality</span><span id="n-quality" class="count muted"></span></button>
       <button data-tab="settings" title="Settings"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg><span class="label">Settings</span></button>
     </nav>
     <div class="sidebar-foot">
@@ -549,6 +550,19 @@
       <div class="bar"><h2>Factory runs</h2><span class="grow"></span><input type="text" id="run-ref" placeholder="Ticket key, id or URL" style="width:260px"><button class="act primary" id="run-start">Plan spec</button><span class="auto-switch"></span></div>
       <table><thead><tr><th>Ticket</th><th>State</th><th>Phase</th><th>Step</th><th>PR</th><th>Updated</th><th></th></tr></thead><tbody id="run-rows"></tbody></table>
     </section>
+    <div id="tab-quality" hidden>
+      <div class="bar"><h2>Quality</h2><span class="grow"></span><span id="quality-note" class="muted"></span></div>
+      <div class="stats">
+        <div class="stat"><div class="label">Judge score</div><div class="value" id="q-score">–</div><div class="sub" id="q-score-sub"></div></div>
+        <div class="stat"><div class="label">Criteria met</div><div class="value" id="q-criteria">–</div><div class="sub" id="q-criteria-sub"></div></div>
+        <div class="stat"><div class="label">Reviews to PASS</div><div class="value" id="q-reviews">–</div><div class="sub">average to the last PASS</div></div>
+        <div class="stat"><div class="label">Repairs</div><div class="value" id="q-repairs">0</div><div class="sub" id="q-repairs-sub"></div></div>
+      </div>
+      <section class="card">
+        <div class="bar"><h2>Runs</h2><span class="muted">judge, criteria, reviews, checks, human comments, cost and time</span></div>
+        <table><thead><tr><th>Ticket</th><th>State</th><th class="num">Judge</th><th class="num">Criteria</th><th class="num">Reviews</th><th class="num">Repairs</th><th class="num">Failed checks</th><th class="num">Human</th><th class="num">Cost</th><th class="num">Time</th></tr></thead><tbody id="quality-rows"></tbody></table>
+      </section>
+    </div>
     <section class="card" id="tab-settings" hidden>
       <div class="bar"><h2>Models for each agent</h2><span class="grow"></span><span class="muted">A change applies to the next step that starts. Saved to lanes.json.</span></div>
       <div id="settings-note" class="muted"></div>
@@ -683,10 +697,11 @@ let tab = "sentry";
 for (const b of document.querySelectorAll("#tabs button")) b.addEventListener("click", () => {
   tab = b.dataset.tab;
   for (const x of document.querySelectorAll("#tabs button")) x.classList.toggle("on", x === b);
-  for (const name of ["sentry", "sprint", "runs", "perf", "settings"]) $(`tab-${name}`).hidden = name !== tab;
+  for (const name of ["sentry", "sprint", "runs", "perf", "quality", "settings"]) $(`tab-${name}`).hidden = name !== tab;
   replay($(`tab-${tab}`), "view-in");
   if (tab === "sprint") loadSprint(false);
   if (tab === "perf") loadPerf();
+  if (tab === "quality") loadQuality();
   if (tab === "settings") loadSettings();
 });
 
@@ -850,6 +865,37 @@ function removeTicket(button, t) {
   });
 }
 $("run-start").addEventListener("click", (e) => act(e.target, async () => { const ref = $("run-ref").value.trim(); if (!ref) throw new Error("enter a ticket"); const r = await api(`/api/tickets/${encodeURIComponent(ref)}/start`, { gate: true, autoApprove, pickModels }); openTicket(r.ticketId); }));
+
+// ---- Quality: judge scores, criteria, review rounds, repairs, checks, cost and time ----
+const qualityDur = (ms) => ms >= 3_600_000 ? `${(ms / 3_600_000).toFixed(1)} h` : ms >= 60_000 ? `${(ms / 60_000).toFixed(1)} min` : `${Math.round(ms / 1000)} s`;
+async function loadQuality() {
+  if (tab !== "quality") return;
+  try {
+    const q = await api("/api/scoreboard");
+    $("quality-note").textContent = `${q.tickets} runs · ${q.judged} judged · ${money(q.cost)} · ${qualityDur(q.ms)} of agent time`;
+    $("quality-note").className = "muted";
+    $("q-score").textContent = q.avgScore === null ? "–" : `${q.avgScore.toFixed(1)}/5`;
+    $("q-score-sub").textContent = `${q.judged} judged`;
+    $("q-criteria").textContent = q.criteriaTotal === 0 ? "–" : `${q.criteriaMet}/${q.criteriaTotal}`;
+    $("q-criteria-sub").textContent = q.criteriaTotal === 0 ? "no full judge report yet" : `${Math.round((100 * q.criteriaMet) / q.criteriaTotal)}%`;
+    $("q-reviews").textContent = q.reviewRounds === null ? "–" : q.reviewRounds.toFixed(1);
+    $("q-repairs").textContent = String(q.repairs);
+    $("q-repairs-sub").textContent = `${q.verifyFailures} failed checks · ${q.humanComments} human comments · ${q.humanRework} reworked`;
+    $("quality-rows").replaceChildren(...q.rows.map((r) => el("tr", {},
+      el("td", {}, r.cid), el("td", {}, r.state),
+      el("td", { class: "num" }, r.judge === null ? "–" : `${r.judge}/5`),
+      el("td", { class: "num" }, `${r.met}/${r.criteria}`),
+      el("td", { class: "num" }, r.pass ? `${r.reviews} PASS` : String(r.reviews)),
+      el("td", { class: "num" }, String(r.repairs)),
+      el("td", { class: "num" }, String(r.verifies)),
+      el("td", { class: "num" }, String(r.human)),
+      el("td", { class: "num" }, money(r.cost)),
+      el("td", { class: "num" }, qualityDur(r.ms)))));
+  } catch (e) {
+    $("quality-note").textContent = e.message;
+    $("quality-note").className = "error";
+  }
+}
 
 // ---- Performance: CPU, memory, agents, tokens and first-token time, from /api/performance ----
 let perf = null, perfEvery = 5000, perfTimer = null, perfDrawFrame = 0, perfWidth = 0;

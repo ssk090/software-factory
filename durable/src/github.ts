@@ -17,6 +17,8 @@ export interface GitHost {
 	ready(worktree: string, pr: string): Promise<void>;
 	/** merged, closed or open, for gc. */
 	state(worktree: string, branch: string): Promise<"MERGED" | "CLOSED" | "OPEN" | null>;
+	/** The PR's state and the review and comment bodies (what people said), or null. */
+	feedback(worktree: string, pr: string): Promise<{ state: "MERGED" | "CLOSED" | "OPEN"; comments: string[]; head: string | null } | null>;
 }
 
 async function gh(cwd: string, args: string[], input?: string): Promise<string> {
@@ -69,5 +71,16 @@ export class GitHubCli implements GitHost {
 		const r = await run("gh", ["pr", "view", branch, "--json", "state", "-q", ".state"], { cwd: worktree, timeoutMs: 120_000 });
 		const s = r.stdout.trim();
 		return r.code === 0 && (s === "MERGED" || s === "CLOSED" || s === "OPEN") ? s : null;
+	}
+	async feedback(worktree: string, pr: string) {
+		const r = await run("gh", ["pr", "view", pr, "--json", "state,comments,reviews,headRefOid"], { cwd: worktree, timeoutMs: 120_000 });
+		if (r.code !== 0) return null;
+		let data: { state?: string; headRefOid?: string; comments?: { body?: string }[]; reviews?: { body?: string }[] };
+		try { data = JSON.parse(r.stdout) as typeof data; } catch { return null; }
+		const raw = data.state;
+		const state: "OPEN" | "MERGED" | "CLOSED" | null = raw === "OPEN" || raw === "MERGED" || raw === "CLOSED" ? raw : null;
+		if (state === null) return null;
+		const comments = [...(data.comments ?? []), ...(data.reviews ?? [])].map((c) => c.body ?? "").filter((b) => b.trim() !== "");
+		return { state, comments, head: data.headRefOid ?? null };
 	}
 }
