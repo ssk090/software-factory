@@ -960,6 +960,13 @@ export function createPipeline(deps: PipelineDeps) {
 			// A run after one that was stopped or blocked continues where that one was.
 			if (ticket.resume !== null && !task.input.fresh) {
 				const resume = ticket.resume as unknown as Checkpoint;
+				// A worktree that is new or attached again lost what SETUP_CMD installed (node_modules, say):
+				// the resumed phase needs it, so the setup runs again before the jump.
+				if (how !== "kept" && config.setupCmd && resume.setupDone) {
+					await note(runtime, context, ticket.id, { kind: "run", text: `The worktree is ${how} again: SETUP_CMD runs again before the run continues` });
+					const code = await exec(ticket, config.setupCmd, "setup.log", context);
+					if (code !== 0) throw new Blocked(`SETUP_CMD failed (exit ${code}), see setup.log`);
+				}
 				log(ticket, `continues at ${resume.phase} (round ${resume.round}), where the last run stopped`);
 				await note(runtime, context, ticket.id, { kind: "run", text: `Continues at "${label(resume.phase)}", where the last run stopped` });
 				await advance(task, runtime, context, { ...resume, step: null, stepHead: null, polls: 0, freshDone: true });

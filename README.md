@@ -120,7 +120,7 @@ The ticket's status in ClickUp shows where it is; the factory's own state is in 
 - **A failing model:** after the provider's own retries, the step moves to the next model in its role's lane (a new attempt, e.g. `code-1-2`); when none is left the ticket is blocked. A model that failed is skipped only for the rest of that run. `AGENT_TIMEOUT` bounds each step.
 - **Parallel:** up to `MAX_PARALLEL` tickets at once; the others wait for a free cell.
 - **Running a ticket again:**
-  - after a stop or a block, the next run continues at the phase where the last one stopped (the step that was cut off runs again as a new attempt; finished steps do not run again);
+  - after a stop or a block, the next run continues at the phase where the last one stopped. The step that was cut off runs again as a new try, and finished steps do not run again. `SETUP_CMD` runs again first when the worktree is new or attached again.
   - after a finished run (PR in review), or with `--fresh`, it starts over from the spec. A branch that was already pushed is never rewritten (the factory never force-pushes): the new run gets the next free name, `<branch>-2`, and its own PR.
 
 The coder and the fixer follow [ponytail](https://github.com/dietrichgebert/ponytail) (vendored in `skills/ponytail/`): the smallest complete change. Tests and code follow [Superpowers](https://github.com/obra/superpowers) (vendored in `skills/superpowers/`): the test writer, the coder and the fixer use `test-driven-development` and `verification-before-completion`, the coder and the fixer `systematic-debugging`, the planner `writing-plans`, and the fixer `receiving-code-review`.
