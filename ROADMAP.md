@@ -89,14 +89,14 @@ the next on a failure. The reviewer and the judge never use the coder's family.
 Per-provider quota for subscriptions (jroute reads Codex, Cursor and OpenCode usage) versus API keys
 and spend only, as the factory uses now.
 
-## 4. A Changes tab: the agents' code, live, in the ticket panel
+## 4. The Changes tab, next: side-by-side, and steering from the diff
 
-Today the code shows only in the PR's "Files changed", so only once the PR is open. A **Changes**
-tab shows the worktree's diff against `refs/remotes/origin/<base>` (also uncommitted edits) while
-the test writer and the coder work: a file list with +/− counts, unified diffs with line numbers,
-the commits, and links to VS Code, the PR and github.dev. Read-only, rendered as text only, redrawn
-only when the diff changes. Later: syntax colouring and side-by-side with diff2html, and selecting
-lines to steer the running step. Issue: https://github.com/ssk090/software-factory/issues/2
+**Now.** The ticket panel's **Changes** tab shows the branch against `origin/<base>` while the agents
+work (issue https://github.com/ssk090/software-factory/issues/2): unified diffs, read-only.
+
+**Next.** Side-by-side view and full syntax colouring with [diff2html](https://diff2html.xyz) (MIT),
+vendored and served like the Mermaid bundle. Select lines in the diff to steer the running step, as
+the spec reader does for spec changes.
 
 ## Not planned
 

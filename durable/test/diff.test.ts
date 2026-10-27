@@ -5,7 +5,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { StepRecord } from "../src/docs.ts";
-import { parseDiff, stepDiff } from "../src/diff.ts";
+import { branchChanges, parseDiff, stepDiff } from "../src/diff.ts";
 import { scratchRepo } from "./support.ts";
 
 const step = (extra: Partial<StepRecord>): StepRecord => ({
@@ -64,6 +64,64 @@ describe("step diff", () => {
 			// A step from before steps recorded their commits: found by its time.
 			const old = await stepDiff(w.repo, step({ started: Date.now() + 60_000, ended: Date.now() + 60_000 }));
 			assert.equal(old.from, after);
+		} finally {
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("shows the branch against the base: commits, uncommitted edits, new files; big, binary and lock files without bodies", async () => {
+		const w = await scratchRepo();
+		try {
+			w.git(w.repo, "switch", "-qc", "feature");
+			await writeFile(join(w.repo, "old.ts"), "export const a = 1;\nexport const b = 2;\nexport const c = 3;\n");
+			w.git(w.repo, "add", ".");
+			w.git(w.repo, "commit", "-qm", "add old.ts");
+			w.git(w.repo, "mv", "old.ts", "renamed.ts");
+			await writeFile(join(w.repo, "big.txt"), "x".repeat(100) + "\n".repeat(1) + "y".repeat(400_000) + "\n");
+			await writeFile(join(w.repo, "image.bin"), Buffer.from([0, 1, 2, 0, 255, 0]));
+			await writeFile(join(w.repo, "pnpm-lock.yaml"), "lockfileVersion: 9\npackages: {}\n");
+			w.git(w.repo, "add", ".");
+			w.git(w.repo, "commit", "-qm", "rename, big, binary, lock");
+			// Not committed yet: an edit, and a new file not in git.
+			await writeFile(join(w.repo, "README.md"), "scratch\nedited, not committed\n");
+			await writeFile(join(w.repo, "new.ts"), "export const n = 1;\n");
+
+			const c = await branchChanges(w.repo, "main");
+			assert.deepEqual(c.commits.map((x) => x.subject), ["rename, big, binary, lock", "add old.ts"]);
+			assert.ok(c.commits.every((x) => /^[0-9a-f]{7,}$/.test(x.sha)));
+			const by = new Map(c.files.map((f) => [f.path, f]));
+			assert.deepEqual([...by.keys()].sort(), ["README.md", "big.txt", "image.bin", "new.ts", "pnpm-lock.yaml", "renamed.ts"]);
+			// Against the base, old.ts never existed: the rename is an added file. Edits in git and new files show with their lines.
+			assert.equal(by.get("renamed.ts")!.status, "added");
+			assert.deepEqual(by.get("README.md")!.hunks.flatMap((h) => h.lines).filter((l) => l.kind === "add").map((l) => l.text), ["edited, not committed"]);
+			assert.equal(by.get("new.ts")!.status, "added");
+			assert.equal(by.get("new.ts")!.additions, 1);
+			assert.equal(by.get("image.bin")!.binary, true);
+			// Counted, but sent without their body.
+			assert.equal(by.get("pnpm-lock.yaml")!.hunks.length, 0);
+			assert.equal(by.get("pnpm-lock.yaml")!.skipped, "lockfile");
+			assert.equal(by.get("pnpm-lock.yaml")!.additions, 2);
+			assert.equal(by.get("big.txt")!.hunks.length, 0);
+			assert.equal(by.get("big.txt")!.skipped, "too large to show");
+			assert.ok(JSON.stringify(c).length < 50_000, "no megabytes for the dashboard");
+			assert.equal(c.additions, c.files.reduce((n, f) => n + f.additions, 0));
+		} finally {
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("shows a rename on the branch as a rename", async () => {
+		const w = await scratchRepo();
+		try {
+			await writeFile(join(w.repo, "old.ts"), "export const a = 1;\nexport const b = 2;\nexport const c = 3;\n");
+			w.git(w.repo, "add", ".");
+			w.git(w.repo, "commit", "-qm", "old.ts on main");
+			w.git(w.repo, "push", "-q", "origin", "main");
+			w.git(w.repo, "switch", "-qc", "feature");
+			w.git(w.repo, "mv", "old.ts", "new.ts");
+			const c = await branchChanges(w.repo, "main");
+			assert.deepEqual(c.files.map((f) => [f.path, f.from, f.status]), [["new.ts", "old.ts", "renamed"]]);
+			assert.deepEqual(c.commits, []);
 		} finally {
 			await rm(w.root, { recursive: true, force: true });
 		}

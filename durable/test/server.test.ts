@@ -103,6 +103,20 @@ describe("server", { timeout: 60_000 }, () => {
 		assert.equal((await post("/api/tickets/T-9/pause", {})).status, 409, "a stopped ticket cannot pause");
 	});
 
+	it("shows the ticket's branch against the base, from its own worktree", async () => {
+		const res = await fetch(`${url}/api/tickets/T-9/changes`);
+		assert.equal(res.status, 200);
+		const c = await res.json();
+		const t = (await factory.ticket("T-9"))!;
+		assert.equal(c.base, "main");
+		assert.equal(c.worktree, t.worktree);
+		assert.equal(c.branch, t.branch);
+		assert.equal(c.pushed, false, "the branch is not on origin yet");
+		assert.equal(c.web, null, "origin is not on GitHub");
+		assert.ok(Array.isArray(c.files) && Array.isArray(c.commits));
+		assert.equal((await fetch(`${url}/api/tickets/UNKNOWN/changes`)).status, 404);
+	});
+
 	it("streams a tool call as the model writes it: the start, each argument delta, and the call in flight for a late viewer", () => {
 		const { compact } = _test;
 		const update = compact({ type: "message_update", changes: [

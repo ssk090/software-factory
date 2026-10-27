@@ -356,6 +356,17 @@
   table.code tr.note td { color: var(--muted-foreground); font-style: italic; }
   .tok-k { color: var(--violet); } .tok-s { color: var(--teal); } .tok-c { color: var(--muted-foreground); font-style: italic; } .tok-n { color: var(--warning); }
   .dfile-more { padding: 10px; color: var(--muted-foreground); font-size: 12px; text-align: center; }
+  /* Changes tab: the branch against the base, in the ticket panel */
+  .changes-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 8px; font-size: 12.5px; color: var(--muted-foreground); }
+  .changes-head .a { color: var(--success); } .changes-head .d { color: var(--destructive); }
+  #detail-view > .commits { margin: 0 0 10px; }
+  .changes-files { margin: 0 0 12px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+  .changes-files .file { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: inherit; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; cursor: pointer; }
+  .changes-files .file:hover { background: var(--muted); }
+  .minibar { display: inline-flex; flex: none; gap: 1px; }
+  .minibar i { width: 7px; height: 7px; border-radius: 1px; background: var(--muted); }
+  .minibar i.a { background: var(--success); } .minibar i.d { background: var(--destructive); }
+  #detail .dfile-head { top: -16px; }
   .tl-step .diffhint { font-size: 12px; color: var(--violet); white-space: nowrap; }
   /* The code the agent is typing now (its write or edit call, streamed from the model) */
   .dfile.pending { border-color: color-mix(in oklab, var(--info) 45%, var(--border)); }
@@ -740,6 +751,8 @@ $("run-start").addEventListener("click", (e) => act(e.target, async () => { cons
 
 // ---- Ticket detail: controls, timeline, logs, files, and a live step ----
 let openId = null, source = null, liveFor = null, lastLive = null, lastSig = "";
+// The Changes tab's data for the open ticket: { ticketId, data, error, sig, closed: Set, opened: Set, timer }.
+let changes = null;
 let detailTab = "timeline", logLevel = "all", logKind = "all", logQuery = "", detailSeen = new Set(), detailFiles = {};
 // Auto-approve: runs you start here approve their spec and plan themselves and go on to the PR.
 // The choice stays in this browser; a running ticket has its own switch in its panel.
@@ -765,10 +778,11 @@ const isLive = (t) => t.state === "running" || t.state === "queued" || t.state =
 const LEVEL = { info: "", warn: "warn", error: "bad" };
 // Events shown under their phase in the timeline (phase and step events are the timeline itself).
 const NOTE = new Set(["verify", "review", "pr", "gate", "control", "budget", "git", "run", "repair", "lesson", "guard"]);
-function closeDetail() { openId = null; liveFor = null; lastSig = ""; source?.close(); source = null; $("main").classList.remove("open"); connect(); }
+function closeDetail() { clearTimeout(changes?.timer); changes = null; openId = null; liveFor = null; lastSig = ""; source?.close(); source = null; $("main").classList.remove("open"); connect(); }
 async function openTicket(ticketId) {
   if (openId !== ticketId) { detailSeen = new Set(); notesOpen = new Set(); detailTab = "timeline"; lastLive = null; liveFor = null; }
   openId = ticketId; lastSig = "";
+  loadChanges();
   $("main").classList.add("open");
   replay($("detail"), "panel-in");
   connect();
@@ -1036,7 +1050,7 @@ async function drawDetail(force, pushed) {
   }
   if (data.ticket?.id !== openId) return; // pushed for a ticket you have left
   // Redraw only when something changed: no flicker, and animations stay for real changes.
-  const sig = `${detailTab}:${JSON.stringify(data)}`;
+  const sig = `${detailTab}:${changes?.ticketId === openId ? changes.sig : ""}:${JSON.stringify(data)}`;
   if (!force && (sig === lastSig || launching)) return; // a countdown on the Approve button keeps its panel
   lastSig = sig;
   const t = data.ticket;
@@ -1087,8 +1101,9 @@ async function drawDetail(force, pushed) {
         el("span", { class: "muted", style: "font-size:12px" }, busyRevision(t) ? "Wait for the change to finish." : "Press and hold to approve. Select text in the spec to ask for a change."))));
   }
   const files = Object.entries(data.files).filter(([, text]) => text);
-  const tabs = [["timeline", "Timeline", null], ["logs", "Logs", (t.events || []).length], ["files", "Files", files.length]];
-  box.push(el("div", { class: "seg", role: "tablist" }, ...tabs.map(([key, name, n]) => el("button", { role: "tab", "aria-selected": String(detailTab === key), class: detailTab === key ? "on" : "", onclick: () => { if (detailTab === key) return; detailTab = key; lastSig = ""; drawDetail(false).then(() => { const view = $("detail-view"); if (view) replay(view, "view-in"); }); } }, name, n === null ? null : el("span", { class: "n" }, n)))));
+  const changed = changes?.ticketId === t.id && changes.data ? changes.data.files.length + changes.data.more : null;
+  const tabs = [["timeline", "Timeline", null], ["changes", "Changes", changed], ["logs", "Logs", (t.events || []).length], ["files", "Files", files.length]];
+  box.push(el("div", { class: "seg", role: "tablist" }, ...tabs.map(([key, name, n]) => el("button", { role: "tab", "aria-selected": String(detailTab === key), class: detailTab === key ? "on" : "", onclick: () => { if (detailTab === key) return; detailTab = key; lastSig = ""; if (key === "changes") loadChanges(); drawDetail(false).then(() => { const view = $("detail-view"); if (view) replay(view, "view-in"); }); } }, name, n === null ? null : el("span", { class: "n" }, n)))));
   const view = el("div", { id: "detail-view" });
   if (detailTab === "timeline") {
     view.append(stagesView(t), timeline(t, data.phases || []));
@@ -1098,14 +1113,17 @@ async function drawDetail(force, pushed) {
       const text = el("input", { type: "text", placeholder: `Steer ${step.name}: your message joins its next turn` });
       view.append(el("div", { class: "bar", style: "margin-top:8px" }, text, el("button", { class: "act primary", onclick: (e) => act(e.target, async () => { if (!text.value.trim()) return; await api(`/api/tickets/${t.id}/steer`, { text: text.value }); text.value = ""; flash("steer sent"); }) }, "Steer")));
     }
-  } else if (detailTab === "logs") view.append(logsView(t));
+  } else if (detailTab === "changes") view.append(...changesView(t));
+  else if (detailTab === "logs") view.append(logsView(t));
   else {
     const names = files.map(([name]) => name);
     view.append(...(files.length ? files.map(([name, text]) => withIcon(el("div", { class: "file-row" }, el("span", {}, name), el("span", { class: "doc-meta" }, docMeta(name, text)), el("span", { class: "grow" }),
       el("button", { class: "act sm", onclick: () => openDoc(t, data.files, names, name) }, "Open")), FILE_ICON)) : [el("div", { class: "muted" }, "No files in the run folder yet.")]));
   }
   box.push(view);
+  const scroll = $("detail").scrollTop;
   $("detail").replaceChildren(...box);
+  if (detailTab === "changes") $("detail").scrollTop = scroll;
   for (const r of revisions(t)) {
     const key = `${t.id}:${r.id}`, was = revisionSeen.get(key);
     if (was && was !== r.status && (r.status === "done" || r.status === "failed")) flash(r.status === "done" ? `${r.file} changed${r.file === "spec.md" ? ", and plan.md updated" : ""}` : `The change to ${r.file} failed: ${r.error}`, r.status === "failed");
@@ -1767,41 +1785,96 @@ function drawDiff(d) {
     body.replaceChildren(el("div", { class: "dfile-more" }, d.live ? "No changes yet. They appear here as the agent makes them." : "This step changed no files."));
     return;
   }
-  const status = (f) => ({ added: "A", deleted: "D", renamed: "R" }[f.status] || "M");
   $("diff-files").replaceChildren(...d.files.map((f, i) => {
     const slash = f.path.lastIndexOf("/");
-    return el("button", { class: "file", title: f.from ? `${f.from} → ${f.path}` : f.path, onclick: () => {
-      diffing.closed.delete(f.path);
-      const box = document.getElementById(`dfile-${i}`);
-      box?.classList.remove("closed");
-      if (box && !box.dataset.drawn) { box.querySelector("tbody").replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
-      box?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
-    } },
-      el("span", { class: `fs ${status(f)}` }, status(f)),
+    return el("button", { class: "file", title: f.from ? `${f.from} → ${f.path}` : f.path, onclick: () => jumpTo(f, i, diffing, `dfile-${i}`) },
+      el("span", { class: `fs ${fileStatus(f)}` }, fileStatus(f)),
       el("span", { class: "fpath" }, slash >= 0 ? el("span", { class: "dir" }, f.path.slice(0, slash + 1)) : null, f.path.slice(slash + 1)),
       el("span", { class: "fstat" }, el("span", { class: "a" }, `+${f.additions}`), " ", el("span", { class: "d" }, `−${f.deletions}`)));
   }));
-  body.replaceChildren(...d.files.map((f, i) => {
-    // Big files and files past the first 30 start closed, and are drawn only when opened.
-    const big = f.additions + f.deletions > 600 || i >= 30;
-    const closed = diffing.closed.has(f.path) || (big && !diffing.opened.has(f.path));
-    const tbody = el("tbody");
-    const box = el("section", { class: `dfile${closed ? " closed" : ""}`, id: `dfile-${i}` },
-      el("div", { class: "dfile-head", onclick: () => {
-        const nowClosed = box.classList.toggle("closed");
-        if (nowClosed) { diffing.closed.add(f.path); diffing.opened.delete(f.path); } else { diffing.closed.delete(f.path); diffing.opened.add(f.path); }
-        if (!nowClosed && !box.dataset.drawn) { tbody.replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
-      } },
-        el("span", { class: "twist" }, "›"), el("span", { class: `fs ${status(f)}` }, status(f)),
-        el("span", { class: "fpath" }, f.from ? `${f.from} → ${f.path}` : f.path),
-        el("span", { class: "fstat" }, el("span", { class: "a" }, `+${f.additions}`), " ", el("span", { class: "d" }, `−${f.deletions}`))),
-      el("div", { class: "dfile-body" },
-        f.binary ? el("div", { class: "dfile-more" }, "A binary file: not shown.") : el("table", { class: "code" }, tbody),
-        f.cut ? el("div", { class: "dfile-more" }, `${f.cut} more lines not shown.`) : null));
-    if (!closed && !f.binary) { tbody.replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
-    return box;
-  }));
+  body.replaceChildren(...d.files.map((f, i) => fileBox(f, i, diffing, `dfile-${i}`)));
   view.scrollTop = scroll;
+}
+const fileStatus = (f) => ({ added: "A", deleted: "D", renamed: "R" }[f.status] || "M");
+/**
+ * One file of a diff, collapsible: the step drawer and the Changes tab. `state` keeps the files you
+ * closed and opened across redraws. Big files and files past the first 30 start closed, and are
+ * drawn only when opened. The diff is the agents' text: text nodes only.
+ */
+function fileBox(f, i, state, id) {
+  const big = f.additions + f.deletions > 600 || i >= 30;
+  const closed = state.closed.has(f.path) || (big && !state.opened.has(f.path));
+  const tbody = el("tbody");
+  const box = el("section", { class: `dfile${closed ? " closed" : ""}`, id },
+    el("div", { class: "dfile-head", onclick: () => {
+      const nowClosed = box.classList.toggle("closed");
+      if (nowClosed) { state.closed.add(f.path); state.opened.delete(f.path); } else { state.closed.delete(f.path); state.opened.add(f.path); }
+      if (!nowClosed && !box.dataset.drawn) { tbody.replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
+    } },
+      el("span", { class: "twist" }, "›"), el("span", { class: `fs ${fileStatus(f)}` }, fileStatus(f)),
+      el("span", { class: "fpath" }, f.from ? `${f.from} → ${f.path}` : f.path),
+      el("span", { class: "fstat" }, el("span", { class: "a" }, `+${f.additions}`), " ", el("span", { class: "d" }, `−${f.deletions}`))),
+    el("div", { class: "dfile-body" },
+      f.binary ? el("div", { class: "dfile-more" }, "A binary file: not shown.")
+        : f.skipped ? el("div", { class: "dfile-more" }, f.skipped === "lockfile" ? "A lockfile: not shown." : "Too large to show.")
+        : el("table", { class: "code" }, tbody),
+      f.cut ? el("div", { class: "dfile-more" }, `${f.cut} more lines not shown.`) : null));
+  if (!closed && !f.binary && !f.skipped) { tbody.replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
+  return box;
+}
+/** Open a file's box in a diff and scroll to it. */
+function jumpTo(f, i, state, id) {
+  state.closed.delete(f.path);
+  state.opened.add(f.path);
+  const box = document.getElementById(id);
+  box?.classList.remove("closed");
+  if (box && !box.dataset.drawn && !f.binary && !f.skipped) { box.querySelector("tbody")?.replaceChildren(...fileRows(f)); box.dataset.drawn = "1"; }
+  box?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+}
+
+// ---- Changes tab: what the ticket's branch changed against the base, live while the agents work ----
+/** Fetch the branch's changes for the open ticket; redraw only when they changed. Every 5 s while the tab shows. */
+async function loadChanges() {
+  if (!openId) return;
+  if (changes?.ticketId !== openId) { clearTimeout(changes?.timer); changes = { ticketId: openId, data: null, error: null, sig: "", closed: new Set(), opened: new Set(), timer: 0 }; }
+  const at = changes;
+  clearTimeout(at.timer);
+  let data = null, error = null;
+  try { data = await api(`/api/tickets/${encodeURIComponent(at.ticketId)}/changes`); } catch (e) { error = e.message; }
+  if (changes !== at || openId !== at.ticketId) return;
+  const sig = JSON.stringify([data, error]);
+  if (sig !== at.sig) { Object.assign(at, { data, error, sig }); drawDetail(false); }
+  if (detailTab === "changes") at.timer = setTimeout(loadChanges, 5000);
+}
+/** A GitHub-style bar of five: the share of added and removed lines. */
+function miniBar(a, d) {
+  const n = a + d, green = n ? Math.round((a / n) * 5) : 0, red = n ? Math.min(5 - green, Math.max(d ? 1 : 0, Math.round((d / n) * 5))) : 0;
+  return el("span", { class: "minibar", "aria-hidden": "true" }, ...Array.from({ length: 5 }, (_, k) => el("i", { class: k < green ? "a" : k < green + red ? "d" : "" })));
+}
+function changesView(t) {
+  if (changes?.ticketId !== t.id || (!changes.data && !changes.error)) return [el("div", { class: "muted" }, "Loading the changes…")];
+  if (changes.error) return [el("div", { class: "muted" }, changes.error)];
+  const c = changes.data;
+  const links = [
+    c.worktree ? el("a", { href: `vscode://file${c.worktree.startsWith("/") ? "" : "/"}${c.worktree}` }, "Open in VS Code") : null,
+    c.pr ? link(`${c.pr.replace(/\/$/, "")}/files`, "Files changed on the PR") : null,
+    c.web ? link(c.web, "Open on github.dev") : null,
+  ].filter(Boolean);
+  const out = [el("div", { class: "changes-head" },
+    el("span", {}, el("span", { class: "a" }, `+${c.additions}`), " ", el("span", { class: "d" }, `−${c.deletions}`), ` · ${c.files.length}${c.more ? `+${c.more}` : ""} file${c.files.length === 1 ? "" : "s"} against origin/${c.base}`),
+    el("span", { class: "grow" }), ...links.flatMap((a, k) => (k ? [" · ", a] : [a])))];
+  if (c.commits.length) out.push(el("div", { class: "commits" }, ...c.commits.slice(0, 20).map((x) => el("div", {}, el("span", { class: "sha" }, x.sha), x.subject)),
+    ...(c.commits.length > 20 ? [el("div", { class: "muted" }, `… ${c.commits.length - 20} more commits`)] : [])));
+  if (!c.files.length) return [...out, el("div", { class: "dfile-more" }, isLive(t) ? "No changes yet. They appear here as the agents make them." : "The branch changes no files.")];
+  out.push(el("div", { class: "changes-files" }, ...c.files.map((f, i) => {
+    const slash = f.path.lastIndexOf("/");
+    return el("button", { class: "file", title: f.from ? `${f.from} → ${f.path}` : f.path, onclick: () => jumpTo(f, i, changes, `cfile-${i}`) },
+      el("span", { class: `fs ${fileStatus(f)}` }, fileStatus(f)),
+      el("span", { class: "fpath" }, slash >= 0 ? el("span", { class: "dir" }, f.path.slice(0, slash + 1)) : null, f.path.slice(slash + 1)),
+      el("span", { class: "fstat" }, el("span", { class: "a" }, `+${f.additions}`), " ", el("span", { class: "d" }, `−${f.deletions}`)), miniBar(f.additions, f.deletions));
+  })));
+  out.push(...c.files.map((f, i) => fileBox(f, i, changes, `cfile-${i}`)));
+  return out;
 }
 async function loadDiff() {
   if (!diffing || !$("diff").open) return;
