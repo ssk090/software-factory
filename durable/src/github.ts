@@ -10,6 +10,7 @@ export interface GitHost {
 	createDraft(worktree: string, base: string, branch: string, title: string, body: string): Promise<string>;
 	edit(worktree: string, pr: string, title: string, body: string): Promise<void>;
 	addLabel(worktree: string, pr: string, label: string): Promise<void>;
+	addAssignees(worktree: string, pr: string, logins: readonly string[]): Promise<void>;
 	comment(worktree: string, pr: string, body: string): Promise<void>;
 	/** One PR review (a comment, never an approval) with its inline comments, on `commit`. */
 	review(worktree: string, pr: string, commit: string, body: string, comments: readonly InlineComment[]): Promise<void>;
@@ -38,6 +39,9 @@ export class GitHubCli implements GitHost {
 	async addLabel(worktree: string, pr: string, label: string) {
 		await run("gh", ["label", "create", label, "--color", "5319E7", "--description", "Pull request opened by the software factory"], { cwd: worktree });
 		await gh(worktree, ["pr", "edit", pr, "--add-label", label]);
+	}
+	async addAssignees(worktree: string, pr: string, logins: readonly string[]) {
+		await gh(worktree, ["pr", "edit", pr, "--add-assignee", logins.join(",")]);
 	}
 	async comment(worktree: string, pr: string, body: string) {
 		await gh(worktree, ["pr", "comment", pr, "--body-file", "-"], body);

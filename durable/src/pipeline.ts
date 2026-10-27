@@ -1050,17 +1050,28 @@ export function createPipeline(deps: PipelineDeps) {
 			const ticket = await ticketOf(task, runtime, context);
 			await pushSafely(ticket, runtime, context);
 			let pr = ticket.pr ?? (await gitHost.prFor(ticket.worktree!, ticket.branch!));
+			let assigned = "";
 			if (pr === null) {
 				const title = await scrub(runtime, context, ticket, "the PR title", (await readText(join(ticket.run!, "pr-title.txt"))).trim());
 				const body = await scrub(runtime, context, ticket, "the PR body", await readText(join(ticket.run!, "pr-body.md")));
 				pr = await gitHost.createDraft(ticket.worktree!, config.base, ticket.branch!, title, body);
 				if (config.prLabel) await gitHost.addLabel(ticket.worktree!, pr, config.prLabel).catch((e) => log(ticket, `label: ${e instanceof Error ? e.message : e}`));
+				// Only a PR the factory opens; a failure is said, and the run goes on.
+				const who = config.prAssignees.join(", ");
+				if (who) {
+					assigned = await gitHost.addAssignees(ticket.worktree!, pr, config.prAssignees).then(
+						() => `PR assigned to ${who}`,
+						(e) => `Could not assign the PR to ${who}: ${e instanceof Error ? e.message : e}`,
+					);
+					log(ticket, assigned);
+				}
 			}
 			log(ticket, `PR ${pr}`);
 			// The PR is up: the ticket waits on engineers from here (review and judge only add to the PR).
 			await setStatus(runtime, context, ticket, config.statuses.inReview);
 			await advance(task, runtime, context, { phase: "review", round: 1 }, (t) => {
 				addEvent(t, { kind: "pr", text: `${t.pr === null ? "Draft PR opened" : "PR"}: ${pr} (branch ${t.branch} pushed)` });
+				if (assigned) addEvent(t, { kind: "pr", text: assigned, ...(assigned.startsWith("Could not") ? { level: "warn" as const } : {}) });
 				t.pr = pr;
 			});
 		},

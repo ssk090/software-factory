@@ -65,6 +65,7 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			// The PR flow and the ticket's statuses.
 			assert.ok(w.gitHost.log.some((l) => l.startsWith("create main feature/T-1/test-ticket-t-1 title 1")), w.gitHost.log.join("\n"));
 			assert.ok(w.gitHost.log.includes("label https://example.test/pr/1 test-label"));
+			assert.ok(!w.gitHost.log.some((l) => l.startsWith("assign ")), "no PR_ASSIGNEES: nobody is assigned");
 			assert.ok(w.gitHost.log.includes("ready https://example.test/pr/1"));
 			assert.ok(w.gitHost.log.includes("review https://example.test/pr/1 file.txt:1"), "review 1 went to the PR with its inline comment");
 			assert.ok(t.events.some((e) => e.text === "Review 1: FIX; posted on the PR with 1 inline comment(s)"));
@@ -108,6 +109,21 @@ describe("pipeline", { timeout: 120_000 }, () => {
 		}
 	});
 
+	it("assigns the PR it opens to PR_ASSIGNEES", async () => {
+		const w = await world({}, { PR_ASSIGNEES: " alice, @me ,," });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-32", { gate: false });
+			const t = await settle(factory, "T-32");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.deepEqual(w.gitHost.log.filter((l) => l.startsWith("assign ")), ["assign https://example.test/pr/1 alice,@me"]);
+			assert.ok(t.events.some((e) => e.text === "PR assigned to alice, @me"));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("skips the browser check when the change touches no UI file, and says why", async () => {
 		const w = await world({}, { RUNTIME_CHECK: "1" });
 		const factory = await Factory.open(w.deps);
@@ -117,6 +133,21 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			assert.equal(t.state, "in_review", t.blocked ?? "");
 			assert.ok(!t.steps.some((s) => s.role === "runtime"), t.steps.map((s) => s.name).join(" "));
 			assert.ok(t.events.some((e) => e.text === "Browser check skipped: the change touches no UI file"), t.events.map((e) => e.text).join("\n"));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("goes on when the PR cannot be assigned, and says so in the ticket's log", async () => {
+		const w = await world({}, { PR_ASSIGNEES: "nobody-here" });
+		w.gitHost.assignFails = true;
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-33", { gate: false });
+			const t = await settle(factory, "T-33");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.events.some((e) => /^Could not assign the PR to nobody-here: could not assign nobody-here/.test(e.text)), t.events.map((e) => e.text).join("\n"));
 		} finally {
 			await factory.close();
 			await rm(w.root, { recursive: true, force: true });

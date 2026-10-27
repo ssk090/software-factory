@@ -37,6 +37,8 @@ export type Config = {
 	/** Coordinator repairs per phase and run before a failure blocks the ticket (0: no coordinator). */
 	readonly maxRepairs: number;
 	readonly prLabel: string;
+	/** GitHub logins the factory assigns its PRs to (`@me`: the account gh is logged in as). Empty: nobody. */
+	readonly prAssignees: readonly string[];
 	readonly trackerComments: boolean;
 	/** Attach the spec and plan to the ticket as .md files (default on). */
 	readonly trackerAttach: boolean;
@@ -148,6 +150,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		agentTimeoutMs: num(env.AGENT_TIMEOUT, 3600, "AGENT_TIMEOUT") * 1000,
 		maxRepairs: num(env.MAX_REPAIRS, 2, "MAX_REPAIRS"),
 		prLabel: env.PR_LABEL ?? "",
+		prAssignees: (env.PR_ASSIGNEES ?? "").split(",").map((s) => s.trim()).filter(Boolean),
 		trackerComments: flag(env.TRACKER_COMMENTS, false),
 		trackerAttach: flag(env.TRACKER_ATTACH, true),
 		branchType: env.BRANCH_TYPE ?? "",
