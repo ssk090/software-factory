@@ -1038,7 +1038,7 @@ drawAutoSwitches();
 const isLive = (t) => t.state === "running" || t.state === "queued" || t.state === "waiting_approval";
 const LEVEL = { info: "", warn: "warn", error: "bad" };
 // Events shown under their phase in the timeline (phase and step events are the timeline itself).
-const NOTE = new Set(["verify", "review", "pr", "gate", "control", "budget", "git", "run", "repair", "lesson", "guard"]);
+const NOTE = new Set(["verify", "test", "review", "pr", "gate", "control", "budget", "git", "run", "repair", "lesson", "guard"]);
 function closeDetail() { clearTimeout(changes?.timer); changes = null; openId = null; liveFor = null; lastSig = ""; source?.close(); source = null; $("main").classList.remove("open"); connect(); }
 async function openTicket(ticketId) {
   if (openId !== ticketId) { detailSeen = new Set(); notesOpen = new Set(); detailTab = "timeline"; lastLive = null; liveFor = null; }
@@ -1175,7 +1175,7 @@ function hookRows(t, events) {
   });
 }
 
-const NOTE_LABEL = { run: "Run", repair: "Coordinator", lesson: "Lesson", verify: "Verify", review: "Review", pr: "Pull request", gate: "Approval", control: "Control", budget: "Budget", git: "Git", guard: "Guard", hook: "Hook", tracker: "Tracker", step: "Step" };
+const NOTE_LABEL = { run: "Run", repair: "Coordinator", lesson: "Lesson", verify: "Verify", test: "Tests", review: "Review", pr: "Pull request", gate: "Approval", control: "Control", budget: "Budget", git: "Git", guard: "Guard", hook: "Hook", tracker: "Tracker", step: "Step" };
 let notesOpen = new Set();
 /** Text with its URLs as links; a GitHub PR shows as "PR #n". */
 function linked(text) {

@@ -499,6 +499,49 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("stops the run when TEST_CMD passes before the code exists", async () => {
+		const w = await world({ testCmd: "true" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-53", { gate: false });
+			const t = await settle(factory, "T-53");
+			assert.equal(t.state, "blocked");
+			assert.match(t.blocked ?? "", /TEST_CMD passed before the spec was implemented/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("takes a red TEST_CMD as the proof that the new tests fail", async () => {
+		const w = await world({ testCmd: "false" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-54", { gate: false });
+			const t = await settle(factory, "T-54");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(t.events.some((e) => e.text === "TEST_CMD fails as it should before the code (test-red.log)"));
+			assert.equal(await readFile(join(t.run!, "test-red.log"), "utf8"), "");
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("stops the run when the test writer leaves its test uncommitted", async () => {
+		const w = await world({ testCmd: "false", testUncommitted: 'echo "test AC-1" > ac1.test' });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-55", { gate: false });
+			const t = await settle(factory, "T-55");
+			assert.equal(t.state, "blocked");
+			assert.match(t.blocked ?? "", /test writer left changes that are not committed: \?\? ac1\.test/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);

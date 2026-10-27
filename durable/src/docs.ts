@@ -51,7 +51,7 @@ export type Revision = {
 export type TicketEvent = {
 	at: number;
 	level: "info" | "warn" | "error";
-	/** run, phase, step, gate, verify, hook, tracker, git, pr, review, control, budget */
+	/** run, phase, step, gate, verify, hook, tracker, git, pr, review, control, budget, test */
 	kind: string;
 	text: string;
 	/** The pipeline phase it happened in. */

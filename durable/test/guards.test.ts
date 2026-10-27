@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { useOriginUrl } from "../src/git.ts";
+import { freezeTests, useOriginUrl } from "../src/git.ts";
 import { verifyProblem } from "../src/lessons.ts";
 import { notInPlan, unneededFiles } from "../src/scope.ts";
 import { writeGuardHooks } from "../src/git.ts";
@@ -126,6 +126,30 @@ describe("guardrails", () => {
 			await mkdir(join(w.root, "run"), { recursive: true });
 			await writeFile(join(w.root, "run", "plan.md"), "Change src/a.ts and pnpm-lock.yaml.");
 			assert.ok((await notInPlan(w.repo, "origin/main", join(w.root, "run"))).includes("debug.log"));
+		} finally {
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("freezes the test files and leaves a config or a helper free", async () => {
+		const w = await scratchRepo();
+		try {
+			w.git(w.repo, "checkout", "-q", "-b", "feature/tests");
+			const files: [string, string][] = [
+				["vitest.config.ts", "export {}\n"],
+				["src/order.ts", "export {}\n"],
+				["src/order.test.ts", "assert true\n"],
+				["tests/cart.spec.ts", "assert true\n"],
+				["fixtures/order.json", "{}\n"],
+			];
+			for (const [file, text] of files) {
+				await mkdir(join(w.repo, dirname(file)), { recursive: true });
+				await writeFile(join(w.repo, file), text);
+			}
+			w.git(w.repo, "add", ".");
+			w.git(w.repo, "commit", "-q", "-m", "test: the spec");
+			assert.deepEqual(Object.keys(await freezeTests(w.repo, "main")).sort(), ["src/order.test.ts", "tests/cart.spec.ts"]);
+			assert.deepEqual(Object.keys(await freezeTests(w.repo, "main", "The test is src/order.test.ts.")), ["src/order.test.ts"], "the plan's names win");
 		} finally {
 			await rm(w.root, { recursive: true, force: true });
 		}
