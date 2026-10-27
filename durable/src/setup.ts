@@ -5,6 +5,7 @@
 import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { FileCredentials } from "./auth.ts";
 import { type Config, loadConfig } from "./config.ts";
 import { run } from "./git.ts";
 import { requestJson } from "./http.ts";
@@ -72,6 +73,10 @@ export type SetupView = {
 	firstRun: boolean;
 	keys: SetupKey[];
 	agents: SetupAgent[];
+	/** OAuth sign-ins (OpenAI, Anthropic, ...): provider id and credential type. No secret. */
+	logins: { provider: string; type: string }[];
+	/** Why the credential file could not be read, when it could not. */
+	loginError: string | null;
 };
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -134,12 +139,21 @@ export async function setupView(config: Config): Promise<SetupView> {
 		return { name: spec.name, label: spec.label, group: spec.group, secret: spec.secret, set: value !== "", hint: spec.secret ? mask(value) : "", value: spec.secret ? "" : value };
 	});
 	const raw = await readFile(config.configFile, "utf8").catch(() => "");
+	let logins: { provider: string; type: string }[] = [];
+	let loginError: string | null = null;
+	try {
+		logins = (await new FileCredentials(join(c.stateDir, "auth.json")).list()).map((info) => ({ provider: info.providerId, type: info.type }));
+	} catch (error) {
+		loginError = error instanceof Error ? error.message : String(error);
+	}
 	return {
 		file: config.configFile,
 		loopback: LOOPBACK.has(c.dash.host),
 		firstRun: !/^REPO=/m.test(raw) && process.env.REPO === undefined,
 		keys,
 		agents: await agents(config),
+		logins,
+		loginError,
 	};
 }
 
@@ -295,10 +309,11 @@ export async function testConnection(config: Config, kind: ConnectionKind): Prom
 		const tail = `${result.stdout}\n${result.stderr}`.trim().split("\n").slice(-15).join("\n");
 		return { ok: result.code === 0, detail: clean(`VERIFY_CMD ${result.code === 0 ? "passes" : `fails (exit ${result.code})`}${tail === "" ? "" : `:\n${tail}`}`) };
 	}
-	const models = builtinModels();
+	const models = builtinModels({ credentials: new FileCredentials(join(c.stateDir, "auth.json")) });
 	const ready: string[] = [];
 	for (const provider of ["anthropic", "openai", "google", "xai", "mistral", "groq", "openrouter"]) {
-		if ((await models.getAuth(provider)) !== undefined) ready.push(provider);
+		const auth = await models.getAuth(provider).catch(() => undefined);
+		if (auth !== undefined) ready.push(provider);
 	}
 	return { ok: ready.length > 0, detail: ready.length === 0 ? "no model provider has a key" : `model providers ready: ${ready.join(", ")}` };
 }
