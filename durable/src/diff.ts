@@ -1,6 +1,7 @@
 // What an agent step changed in the ticket's worktree, for the dashboard's diff drawer: the commits
 // it made, and while it runs its uncommitted edits and new files too. A step records the commit it
 // started from and the one it ended on; a step from before that is found by its time window.
+// And what the whole branch changed against the base, for the ticket's Changes tab.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { StepRecord } from "./docs.ts";
@@ -18,6 +19,8 @@ export type DiffFile = {
 	hunks: DiffHunk[];
 	/** Lines left out to keep the page fast (a generated or huge file). */
 	cut: number;
+	/** Why the body was left out (counted, but no hunks): a lockfile, or too large to show. */
+	skipped?: "lockfile" | "too large to show";
 };
 export type StepDiff = {
 	from: string | null;
@@ -35,6 +38,10 @@ export type StepDiff = {
 const MAX_FILES = 200;
 const MAX_LINES_PER_FILE = 2500;
 const MAX_NEW_FILE_BYTES = 200_000;
+/** The most text one file, and all files together, send to the Changes tab. */
+const MAX_FILE_CHARS = 100_000;
+const MAX_TOTAL_CHARS = 800_000;
+const LOCKFILE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|composer\.lock|go\.sum|pubspec\.lock|Podfile\.lock|packages\.lock\.json)$/;
 
 /** The last commit on HEAD made before `ms`, or null. */
 async function commitBefore(worktree: string, ms: number): Promise<string | null> {
@@ -139,6 +146,64 @@ export async function stepDiff(worktree: string, step: StepRecord): Promise<Step
 		to,
 		live: running,
 		commits,
+		files,
+		additions: files.reduce((n, f) => n + f.additions, 0),
+		deletions: files.reduce((n, f) => n + f.deletions, 0),
+		more,
+	};
+}
+
+export type BranchChanges = {
+	base: string;
+	/** Where the branch left the base (their merge base). */
+	from: string;
+	/** The branch's commits, newest first. */
+	commits: { sha: string; subject: string }[];
+	files: DiffFile[];
+	additions: number;
+	deletions: number;
+	/** Files left out (more than MAX_FILES). */
+	more: number;
+};
+
+/** The commits on HEAD that are not on `ref`, newest first. */
+async function commitsSince(worktree: string, ref: string): Promise<{ sha: string; subject: string }[]> {
+	const log = await git(worktree, "log", "--format=%h%x00%s", `${ref}..HEAD`);
+	return log.stdout.split("\n").filter(Boolean).map((l) => {
+		const [sha, subject = ""] = l.split("\u0000");
+		return { sha: sha!, subject };
+	});
+}
+
+/**
+ * What the ticket's branch changed against origin/`base`: its commits, and its uncommitted edits and
+ * new files. Lockfiles, and files or a total too large to send, are counted but go without their body.
+ */
+export async function branchChanges(worktree: string, base: string): Promise<BranchChanges> {
+	const ref = `refs/remotes/origin/${base}`;
+	const mb = await git(worktree, "merge-base", ref, "HEAD");
+	if (mb.code !== 0 || mb.stdout.trim() === "") throw new Error(`no origin/${base} to compare with in the worktree`);
+	const from = mb.stdout.trim();
+	const raw = await git(worktree, "diff", "--no-color", "--no-ext-diff", "--find-renames", "-U3", from);
+	let files = parseDiff(raw.stdout);
+	const untracked = (await git(worktree, "ls-files", "--others", "--exclude-standard")).stdout.split("\n").filter(Boolean);
+	for (const path of untracked.slice(0, MAX_FILES)) files.push(await untrackedFile(worktree, path));
+	const more = Math.max(0, files.length - MAX_FILES);
+	files = files.slice(0, MAX_FILES);
+	let total = 0;
+	for (const f of files) {
+		const chars = f.hunks.reduce((n, h) => n + h.lines.reduce((m, l) => m + l.text.length, 0), 0);
+		const skipped = LOCKFILE.test(f.path) ? "lockfile" : chars > MAX_FILE_CHARS || total + chars > MAX_TOTAL_CHARS || (f.hunks.length === 0 && f.cut > 0) ? "too large to show" : null;
+		if (skipped === null) {
+			total += chars;
+			continue;
+		}
+		Object.assign(f, { hunks: [], cut: 0, skipped });
+	}
+	return {
+		base,
+		from,
+		commits: await commitsSince(worktree, from),
 		files,
 		additions: files.reduce((n, f) => n + f.additions, 0),
 		deletions: files.reduce((n, f) => n + f.deletions, 0),

@@ -13,7 +13,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgentEvent, AssistantEntry, type ConversationId, watchEvents } from "@earendil-works/pi-durable";
 import type { Ticket } from "./docs.ts";
 import type { Factory } from "./host.ts";
-import { stepDiff } from "./diff.ts";
+import { branchChanges, stepDiff } from "./diff.ts";
+import { git } from "./git.ts";
 import { PHASES } from "./pipeline.ts";
 import { score } from "./sentry.ts";
 
@@ -215,6 +216,20 @@ export async function startServer(factory: Factory, options: { dashboardFile: st
 				if (ticket === undefined || step === undefined) throw new HttpFail(404, "unknown ticket or step");
 				if (ticket.worktree === null || !(await stat(ticket.worktree).then(() => true, () => false))) throw new HttpFail(409, "the ticket's worktree is gone (removed, or the PR was merged)");
 				return json(res, 200, { step: step.name, role: step.role, model: step.model, status: step.status, ...(await stepDiff(ticket.worktree, step)) });
+			}
+			// What the branch changed against the base so far, for the Changes tab: GET /api/tickets/:id/changes
+			if (method === "GET" && action === "changes") {
+				const ticket = await factory.ticket(ticketId);
+				if (ticket === undefined) throw new HttpFail(404, "unknown ticket");
+				// The worktree is the ticket's own, never a path from the request.
+				if (ticket.worktree === null || !(await stat(ticket.worktree).then(() => true, () => false))) throw new HttpFail(409, "the ticket's worktree is gone (removed, or the PR was merged)");
+				const changes = await branchChanges(ticket.worktree, factory.deps.config.base).catch((e: unknown) => {
+					throw new HttpFail(409, e instanceof Error ? e.message : String(e));
+				});
+				const pushed = ticket.branch !== null && (await git(ticket.worktree, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${ticket.branch}`)).code === 0;
+				const repo = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec((await git(ticket.worktree, "remote", "get-url", "origin")).stdout.trim())?.[1];
+				const web = pushed && repo ? `https://github.dev/${repo}/tree/${ticket.branch}` : null;
+				return json(res, 200, { ...changes, worktree: ticket.worktree, branch: ticket.branch, pr: ticket.pr, pushed, web });
 			}
 			if (method === "POST") {
 				const input = await body(req);
