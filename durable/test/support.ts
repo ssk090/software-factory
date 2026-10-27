@@ -217,7 +217,7 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 			const file = /Update RUN_DIR\/(spec|plan)\.md/.exec(asked)?.[1] ?? "spec";
 			return write(`${run}/${file}.md`, file === "spec" ? "AC-1: it works\nAC-2: the list can be empty\nSTATUS: READY\n" : "plan: AC-1 -> ac1.test\nplan: AC-2 -> ac2.test\n");
 		}
-		if (/The spec changed after a review/.test(asked)) return write(`${run}/plan.md`, "plan: AC-1 -> ac1.test\nplan: AC-2 -> ac2.test\n");
+		if (/The spec changed/.test(asked)) return write(`${run}/plan.md`, "plan: AC-1 -> ac1.test\nplan: AC-2 -> ac2.test\n");
 		// Blocked for Simplified Technical English: write it again, plainly.
 		if (lastResult?.role === "toolResult" && lastResult.isError && /Simplified Technical English/.test(text(lastResult))) {
 			return write(`${run}/spec.md`, "AC-1: it works\nSTATUS: READY\n");

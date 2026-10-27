@@ -188,7 +188,7 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
-	it("waits at the gate for your approval, and the note reaches the coder", async () => {
+	it("waits at the gate for your approval, and the note reaches the coder, the spec and the plan", async () => {
 		let coderSaw = "";
 		const w = await world({ onCoder: (m) => (coderSaw = JSON.stringify(m)) });
 		const factory = await Factory.open(w.deps);
@@ -203,10 +203,13 @@ describe("pipeline", { timeout: 600_000 }, () => {
 			const t = await settle(factory, "T-2");
 			assert.equal(t.state, "in_review", t.blocked ?? "");
 			assert.match(await readFile(join(t.run!, "comments.md"), "utf8"), /\[approval note\] use pnpm/);
+			assert.equal(t.noteApplied, t.approved?.at, "the note was applied once");
+			assert.match(await readFile(join(t.run!, "spec.md"), "utf8"), /AC-2: the list can be empty/);
+			assert.match(await readFile(join(t.run!, "plan.md"), "utf8"), /AC-2 -> ac2\.test/);
 			assert.ok(w.tracker.log.includes("comment T-2 Approved: use pnpm"));
 			// The approved spec and plan are on the ticket, once each.
 			assert.deepEqual(w.tracker.log.filter((l) => l.startsWith("attach ")), ["attach T-2 T-2-spec.md", "attach T-2 T-2-plan.md"]);
-			assert.match(w.tracker.attached.get("T-2/T-2-spec.md") ?? "", /AC-1: it works/);
+			assert.match(w.tracker.attached.get("T-2/T-2-spec.md") ?? "", /AC-2: the list can be empty/, "the attached spec holds the note's change");
 			assert.match(w.tracker.attached.get("T-2/T-2-plan.md") ?? "", /plan: AC-1/);
 			assert.ok(t.events.some((e) => e.text === "Attached T-2-spec.md to the ticket"));
 			assert.ok(t.attachedApproval !== null && t.attachedApproval === t.approved?.at);
