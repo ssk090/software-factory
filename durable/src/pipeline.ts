@@ -29,9 +29,9 @@ import {
 	type Tx,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
+import { backendCache, type BackendPr, backendsDir, backendTree, commitsAhead, plannedRepos, prepareBackend, pushBackend, uncommitted } from "./backends.ts";
 import type { Config } from "./config.ts";
 import { addEvent, type Revision, StepDoc, type StepRecord, type StepUsage, type Ticket, TicketDoc, type TicketEvent, TicketIndex } from "./docs.ts";
-import { backendCache, backendsDir, backendTree, commitsAhead, prepareBackend, pushBackend } from "./backends.ts";
 import { type EnvFactory, ensureContainer, removeContainer } from "./env.ts";
 import { branchName, cellEnv, currentBranch, type GitIdentity, freezeTests, git, gitOk, head, prepareWorktree, push, run, testsKept, writeGuardHooks } from "./git.ts";
 import { indexScope, loadIndexOptions } from "./index/options.ts";
@@ -737,20 +737,28 @@ export function createPipeline(deps: PipelineDeps) {
 		return out;
 	};
 	/** The frontend PR body, with a link to every backend PR it needs. */
-	const withBackendPrs = (body: string, prs: readonly { repo: string; pr: string }[]) =>
+	const withBackendPrs = (body: string, prs: readonly BackendPr[]) =>
 		prs.length === 0 ? body : `${body.trimEnd()}\n\nDepends on:\n${prs.map((p) => `- ${p.repo}: ${p.pr}`).join("\n")}\n`;
 	/**
 	 * Push every backend repo the ticket changed, and open its draft PR (or find the open one). The same
 	 * guardrails as REPO: its branch only, the secret scan, and BACKEND_VERIFY_CMD in the sandbox.
 	 */
-	const pushBackends = async (ticket: Ticket, runtime: R, context: Context): Promise<{ repo: string; pr: string }[]> => {
-		const prs: { repo: string; pr: string }[] = [];
+	const pushBackends = async (ticket: Ticket, runtime: R, context: Context): Promise<BackendPr[]> => {
+		const prs: BackendPr[] = [];
+		const planned = plannedRepos(await readText(join(ticket.run!, "plan.md")));
 		for (const b of config.backends) {
 			const tree = backendTree(ticket.worktree!, b.name);
-			if (!(await exists(tree)) || (await commitsAhead(tree, config.backendBase)) === 0) continue;
+			if (!(await exists(tree))) continue;
+			if (await uncommitted(tree)) await note(runtime, context, ticket.id, { kind: "git", level: "warn", text: `Backend repo ${b.name} has changes that are not committed: the factory pushes commits only` });
+			if ((await commitsAhead(tree, config.backendBase)) === 0) continue;
 			if ((await currentBranch(tree)) !== ticket.branch) throw new Blocked(`the ${b.name} worktree left branch ${ticket.branch}`);
+			if (!planned.includes(b.name)) await note(runtime, context, ticket.id, { kind: "guard", level: "warn", text: `Backend repo ${b.name} changed, but plan.md does not name it on its Repos: line` });
 			const tracking = `refs/remotes/origin/${ticket.branch}`;
 			const since = (await git(tree, "rev-parse", "-q", "--verify", tracking)).code === 0 ? tracking : `refs/remotes/origin/${config.backendBase}`;
+			const unneeded = await unneededFiles(tree, since, await keptOnPurpose(ticket.run!));
+			if (unneeded.length > 0) {
+				throw new Repairable("scope", `the push of ${b.name} stopped: ${unneeded.length} file(s) the ticket does not need`, `REPO=${tree}\nSINCE=${since}\n\n${formatUnneeded(unneeded)}`);
+			}
 			const findings = await scanBranch(tree, since);
 			if (findings.length > 0) {
 				throw new Repairable("secrets", `the push of ${b.name} stopped: the secret scan found ${findings.length} possible secret(s)`, `REPO=${tree}\nSINCE=${since}\n\n${formatFindings(findings)}`);
@@ -761,7 +769,7 @@ export function createPipeline(deps: PipelineDeps) {
 				const tail = (await readText(join(ticket.run!, logName))).split("\n").slice(-120).join("\n");
 				if (code !== 0) throw new Repairable("verify", `BACKEND_VERIFY_CMD fails in ${b.name} (exit ${code}), see ${logName}`, `$ cd ${tree} && ${config.backendVerifyCmd}\n${tail}`);
 			}
-			await pushBackend(tree, ticket.branch!, config.prePush);
+			await pushBackend(tree, ticket.branch!);
 			let pr = await gitHost.prFor(tree, ticket.branch!, b.slug);
 			if (pr === null) {
 				const title = await scrub(runtime, context, ticket, "the backend PR title", (await readText(join(ticket.run!, "pr-title.txt"))).trim() || ticket.title);
@@ -783,6 +791,13 @@ export function createPipeline(deps: PipelineDeps) {
 			}, context);
 		}
 		return [...known.filter((k) => !fresh.some((p) => p.repo === k.repo)), ...fresh];
+	};
+	/** A frontend PR that existed before a backend PR did: its body gets the link too. */
+	const linkBackendPrs = async (runtime: R, context: Context, ticket: Ticket, pr: string, before: readonly BackendPr[], after: readonly BackendPr[]) => {
+		if (after.every((p) => before.some((k) => k.repo === p.repo && k.pr === p.pr))) return;
+		const title = (await readText(join(ticket.run!, "pr-title.txt"))).trim();
+		const body = withBackendPrs(await readText(join(ticket.run!, "pr-body.md")), after);
+		if (title) await gitHost.edit(ticket.worktree!, pr, title, await scrub(runtime, context, ticket, "the PR body", body)).catch((e) => log(ticket, `PR edit: ${message(e)}`));
 	};
 	/** Files whose change can change what a browser sees. */
 	const UI_FILES = /\.(?:tsx|jsx|css|scss|sass|less|html)$/i;
@@ -874,7 +889,7 @@ export function createPipeline(deps: PipelineDeps) {
 			const name = container(ticket);
 			if (name !== null) {
 				// Backend worktrees and their clones, at the same paths inside (their .git files point into the clones).
-				const backendMounts = caches.length === 0 ? [] : [backendsDir(ticket.worktree!), join(config.dataDir, "backends")].flatMap((dir) => ["-v", `${dir}:${dir}`]);
+				const backendMounts = caches.length === 0 ? [] : [backendsDir(ticket.worktree!), ...caches].flatMap((dir) => ["-v", `${dir}:${dir}`]);
 				await ensureContainer({
 					name, image: config.sandboxImage, worktree: ticket.worktree!, run: ticket.run!,
 					gitDir: await gitOk(config.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"),
@@ -1127,6 +1142,7 @@ export function createPipeline(deps: PipelineDeps) {
 			await pushSafely(ticket, runtime, context);
 			let pr = ticket.pr ?? (await gitHost.prFor(ticket.worktree!, ticket.branch!));
 			let assigned = "";
+			if (pr !== null) await linkBackendPrs(runtime, context, ticket, pr, ticket.backendPrs ?? [], backendPrs);
 			if (pr === null) {
 				const title = await scrub(runtime, context, ticket, "the PR title", (await readText(join(ticket.run!, "pr-title.txt"))).trim());
 				const body = await scrub(runtime, context, ticket, "the PR body", withBackendPrs(await readText(join(ticket.run!, "pr-body.md")), backendPrs));
@@ -1190,15 +1206,10 @@ export function createPipeline(deps: PipelineDeps) {
 		"push-fix": async (task, runtime, context) => {
 			// Its own phase: a refused push goes to the coordinator, and only the push runs again.
 			const ticket = await ticketOf(task, runtime, context);
-			const before = (ticket.backendPrs ?? []).length;
 			const backendPrs = await pushBackends(ticket, runtime, context);
 			await pushSafely(ticket, runtime, context);
 			// A fix that first touched a backend repo: the frontend PR links its new PR too.
-			if (backendPrs.length > before && ticket.pr) {
-				const title = (await readText(join(ticket.run!, "pr-title.txt"))).trim();
-				const body = withBackendPrs(await readText(join(ticket.run!, "pr-body.md")), backendPrs);
-				if (title) await gitHost.edit(ticket.worktree!, ticket.pr, title, await scrub(runtime, context, ticket, "the PR body", body)).catch((e) => log(ticket, `PR edit: ${message(e)}`));
-			}
+			if (ticket.pr) await linkBackendPrs(runtime, context, ticket, ticket.pr, ticket.backendPrs ?? [], backendPrs);
 			await advance(task, runtime, context, { phase: "review", round: task.state.checkpoint.round + 1, step: null }, (t) => {
 				addEvent(t, { kind: "git", text: `Fixes pushed to ${ticket.branch}` });
 			});

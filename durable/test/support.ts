@@ -216,7 +216,7 @@ export function fauxAgents(behaviour: Behaviour = {}) {
 		if (prompt.includes("# Agent: spec writer")) {
 			return write(`${run}/spec.md`, behaviour.badSpec ? "We are leveraging a robust approach in order to facilitate it.\nSTATUS: READY\n" : "AC-1: it works\nSTATUS: READY\n");
 		}
-		if (prompt.includes("# Agent: planner")) return write(`${run}/plan.md`, "plan: AC-1 -> ac1.test\n");
+		if (prompt.includes("# Agent: planner")) return write(`${run}/plan.md`, `plan: AC-1 -> ac1.test\n${behaviour.coderBackend ? `Repos: repo (form, list), ${behaviour.coderBackend} (field)\n` : ""}`);
 		if (prompt.includes("# Agent: test writer")) {
 			return bash(`echo "test AC-1" > ac1.test && git add ac1.test && git commit -qm "test: AC-1 (red)" && echo "AC-1 -> ac1.test" > ${run}/tests.md`);
 		}

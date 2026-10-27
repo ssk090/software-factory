@@ -40,7 +40,8 @@ async function waitFor(check: () => Promise<boolean>, what: string, ms = 20_000)
 	throw new Error(`timed out waiting for ${what}`);
 }
 
-describe("pipeline", { timeout: 120_000 }, () => {
+// The timeout covers the whole suite, not one test: each test runs a full pipeline.
+describe("pipeline", { timeout: 600_000 }, () => {
 	it("takes a ticket to a reviewed PR: spec, plan, tests, code, docs, PR, review, fix, judge", async () => {
 		const w = await world({}, { VERIFY_CMD: "test -f README.md" });
 		const factory = await Factory.open(w.deps);
@@ -100,7 +101,7 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			await factory.start("T-36", { gate: false });
 			const t = await settle(factory, "T-36");
 			assert.equal(t.state, "in_review", t.blocked ?? "");
-			// The backend branch reached the backend origin; the repo nobody changed got no branch and no PR.
+			// The backend branch reached the backend origin. The repo nobody changed got no branch and no PR.
 			assert.match(w.git(api, "branch", "--list", t.branch!), new RegExp(t.branch!.replace(/\//g, "\\/")));
 			const creates = w.gitHost.log.filter((l) => l.startsWith("create "));
 			assert.equal(creates.length, 2, creates.join("\n"));
@@ -109,6 +110,7 @@ describe("pipeline", { timeout: 120_000 }, () => {
 			assert.deepEqual(t.backendPrs, [{ repo: "api", pr: "https://example.test/pr/1" }]);
 			assert.match(w.gitHost.bodies.get(t.pr!) ?? "", /Depends on:\n- api: https:\/\/example\.test\/pr\/1/);
 			assert.ok(t.events.some((e) => e.text === "Backend PR for api: https://example.test/pr/1"), t.events.map((e) => e.text).join("\n"));
+			assert.ok(!t.events.some((e) => /Repos: line|not committed/.test(e.text)), "the plan names api, and its change is committed");
 			// Remove takes the backend worktrees with the ticket's own.
 			await factory.forget("T-36");
 			assert.equal(await stat(`${t.worktree}.backends/api`).then(() => true, () => false), false);
