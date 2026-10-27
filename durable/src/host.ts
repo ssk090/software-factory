@@ -81,6 +81,7 @@ export class Factory {
 	private readonly wake: (ticketId?: string) => void;
 	private readonly lock: string | null;
 	private budgetTimer: ReturnType<typeof setInterval> | null = null;
+	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 	/** Provider session id -> ticket id, for the throttle (filled as steps are looked up). */
 	private readonly sessions = new Map<string, string>();
 
@@ -155,6 +156,8 @@ export class Factory {
 				const killed = await reapOrphans(ticket.run, containerName(config, ticket.cid));
 				if (killed > 0) log(`${ticket.cid}: ended ${killed} command(s) left running by the last factory`);
 			}
+			// The factory was off: that time is not the running agents' own time (AGENT_TIMEOUT).
+			await factory.accountForDowntime();
 			await factory.ensureLoops(config.sentry.token !== "" && config.sentry.org !== "" ? SentrySync : null, config.autoPickup ? Pickup : null);
 			harness.resume(); // every pipeline, step and loop continues where the last process stopped
 			const watched = factory;
@@ -162,6 +165,36 @@ export class Factory {
 			watched.budgetTimer.unref();
 		}
 		return factory;
+	}
+
+	/**
+	 * The time between the last heartbeat and now is the factory's own downtime. Add it to every
+	 * running step, or a long outage eats the step's AGENT_TIMEOUT and aborts it at once on resume.
+	 */
+	private async accountForDowntime(): Promise<void> {
+		const file = join(this.deps.config.stateDir, "factory.heartbeat");
+		const last = Number((await readFile(file, "utf8").catch(() => "")).trim());
+		const now = Date.now();
+		const down = Number.isFinite(last) && last > 0 ? Math.max(0, now - last) : 0;
+		if (down > 0) {
+			for (const ticket of await this.tickets()) {
+				if (!ticket.steps.some((s) => s.status === "running")) continue;
+				await this.edit(ticket.id, (t) => {
+					for (const step of t.steps) if (step.status === "running") step.pausedMs = (step.pausedMs ?? 0) + down;
+					addEvent(t, { kind: "run", level: "warn", text: `The factory was off for ${duration(down)}, so the running step gets that time back` });
+				});
+			}
+		}
+		await this.heartbeat(file);
+	}
+
+	/** Write the heartbeat now, and keep it fresh while this factory runs. */
+	private async heartbeat(file: string): Promise<void> {
+		const beat = () => writeFile(file, String(Date.now())).catch(() => undefined);
+		await beat();
+		if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
+		this.heartbeatTimer = setInterval(() => void beat(), 30_000);
+		this.heartbeatTimer.unref();
 	}
 
 	/** Start the Sentry sync and the pickup loop once; after a restart the stored ones continue. */
@@ -606,6 +639,7 @@ export class Factory {
 
 	async close(): Promise<void> {
 		if (this.budgetTimer !== null) clearInterval(this.budgetTimer);
+		if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
 		await this.harness.close(context);
 		await this.throttle.flush();
 		if (this.lock !== null) await rm(this.lock, { force: true });

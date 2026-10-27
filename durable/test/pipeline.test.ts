@@ -609,6 +609,31 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("does not count the factory's own downtime against a running step", async () => {
+		const w = await world({ coderSleep: 2 }, { AGENT_TIMEOUT: "10" });
+		let factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-61", { gate: false });
+			const run = join(w.data, "runs", "T-61");
+			await waitFor(() => readFile(join(run, "coder-started")).then(() => true, () => false), "the coder");
+			// The factory goes away for an hour: the step did no work in that time.
+			await writeFile(join(w.config.stateDir, "factory.heartbeat"), String(Date.now() - 3_600_000));
+		} finally {
+			await factory.close();
+		}
+		factory = await Factory.open(w.deps);
+		try {
+			const t = await settle(factory, "T-61");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			const code = t.steps.find((s) => s.name === "code-1-1")!;
+			assert.ok((code.pausedMs ?? 0) >= 3_600_000, `the outage is in pausedMs: ${code.pausedMs}`);
+			assert.ok(t.events.some((e) => /The factory was off for .*, so the running step gets that time back/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);
