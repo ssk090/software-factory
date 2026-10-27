@@ -91,7 +91,7 @@
   tbody tr:last-child td { border-bottom: 0; }
   tbody tr:hover { background: color-mix(in oklch, var(--muted) 50%, transparent); }
   tr.click { cursor: pointer; }
-  td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   td.nowrap { white-space: nowrap; }
   td.row-end { width: 1%; padding-top: 4px; padding-bottom: 4px; text-align: right; white-space: nowrap; }
   button.act.sm { height: 28px; padding: 0 10px; font-size: 13px; }
@@ -678,6 +678,7 @@ async function act(button, work) {
 }
 const STATE = { queued: ["queued", "warn"], running: ["running", "run"], waiting_approval: ["spec ready: approve", "warn"], blocked: ["blocked", "bad"], in_review: ["PR ready", "ok"], stopped: ["stopped", ""] };
 const chip = (t) => { if (!t) return el("span", { class: "muted" }, "not started"); const [label, kind] = t.paused ? ["paused", "warn"] : STATE[t.state] || [t.state, ""]; return el("span", { class: `chip ${kind}` }, label); };
+const stateChip = (state) => { const s = STATE[state]; return s === undefined ? state : el("span", { class: `chip ${s[1]}` }, s[0]); };
 let PHASE_LABEL = {};
 const phaseLabel = (p) => PHASE_LABEL[p] || p;
 const money = (n) => `$${(n || 0).toFixed(2)}`;
@@ -1126,7 +1127,7 @@ async function loadQuality() {
     $("q-repairs").textContent = String(q.repairs);
     $("q-repairs-sub").textContent = `${q.verifyFailures} failed checks · ${q.humanComments} human comments · ${q.humanRework} reworked`;
     $("quality-rows").replaceChildren(...q.rows.map((r) => el("tr", {},
-      el("td", {}, r.cid), el("td", {}, r.state),
+      el("td", {}, r.cid), el("td", {}, stateChip(r.state)),
       el("td", { class: "num" }, r.judge === null ? "–" : `${r.judge}/5`),
       el("td", { class: "num" }, `${r.met}/${r.criteria}`),
       el("td", { class: "num" }, r.pass ? `${r.reviews} PASS` : String(r.reviews)),
