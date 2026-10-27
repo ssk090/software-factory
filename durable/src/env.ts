@@ -14,12 +14,15 @@ import { indexScope } from "./index/options.ts";
 /** The ticket's sandbox container (SANDBOX=docker), or null. */
 export const containerName = (config: Pick<Config, "sandbox">, cid: string) => (config.sandbox === "docker" ? `factory-${cid.toLowerCase().replace(/[^a-z0-9]/g, "-")}` : null);
 
-/** Names of variables an agent's shell never gets. */
-export const SECRET = /(TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIALS)/i;
+/**
+ * The factory's own variables an agent's shell gets: what a tool needs to run, and nothing that can
+ * hold a secret. DATABASE_URL, SENTRY_DSN, INDEX_EMBED_KEY and GIT_CONFIG_PARAMETERS do not match.
+ */
+export const AGENT_ENV = /^(?:PATH|HOME|LANG|LC_[A-Z_]+|TERM|TZ|TMPDIR|INDEX_DIR|INDEX_SCOPE)$/;
 
 export function agentShellEnv(base: NodeJS.ProcessEnv, cell: Record<string, string>): Record<string, string> {
 	const env: Record<string, string> = {};
-	for (const [key, value] of Object.entries(base)) if (value !== undefined && !SECRET.test(key)) env[key] = value;
+	for (const [key, value] of Object.entries(base)) if (value !== undefined && AGENT_ENV.test(key)) env[key] = value;
 	return { ...env, ...cell, IS_SANDBOX: "1" };
 }
 

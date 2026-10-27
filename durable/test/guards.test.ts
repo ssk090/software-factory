@@ -10,7 +10,7 @@ import { verifyProblem } from "../src/lessons.ts";
 import { notInPlan, unneededFiles } from "../src/scope.ts";
 import { writeGuardHooks } from "../src/git.ts";
 import { parseBackends, plannedRepos } from "../src/backends.ts";
-import { inside } from "../src/env.ts";
+import { AGENT_ENV, agentShellEnv, inside } from "../src/env.ts";
 import { fileRoots, HOOK_BYPASS, SECRET_PATHS } from "../src/roles.ts";
 import { knownSecrets, redact, scanBranch, scanText } from "../src/secrets.ts";
 import { scratchOrigin, scratchRepo } from "./support.ts";
@@ -141,6 +141,22 @@ describe("guardrails", () => {
 		} finally {
 			if (before === undefined) delete process.env.GIT_CONFIG_PARAMETERS; else process.env.GIT_CONFIG_PARAMETERS = before;
 		}
+	});
+
+	it("gives an agent's shell the basics and no factory secret, whatever its name", () => {
+		const env = agentShellEnv(
+			{
+				PATH: "/usr/bin", HOME: "/home/me", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8", TERM: "xterm-256color", TZ: "UTC", TMPDIR: "/tmp",
+				INDEX_DIR: "/data/state/index", INDEX_SCOPE: "t-1",
+				CLICKUP_TOKEN: "pk_x", INDEX_EMBED_KEY: "sk-x", DATABASE_URL: "postgres://app:p@db/x", SENTRY_DSN: "https://key@sentry/1",
+				ORIGIN_URL: "https://user:token@github.com/acme/app.git", GIT_CONFIG_PARAMETERS: "'remote.origin.url=https://user:token@github.com/acme/app.git'",
+				SSH_AUTH_SOCK: "/tmp/agent.sock", AWS_SECRET_ACCESS_KEY: "x",
+			},
+			{ FACTORY_TICKET: "t-1", PORT: "20000" },
+		);
+		assert.deepEqual(Object.keys(env).sort(), ["FACTORY_TICKET", "HOME", "INDEX_DIR", "INDEX_SCOPE", "IS_SANDBOX", "LANG", "LC_ALL", "PATH", "PORT", "TERM", "TMPDIR", "TZ"]);
+		assert.ok(!("GIT_CONFIG_PARAMETERS" in env), "the origin URL with its token stays out");
+		for (const name of ["CLICKUP_TOKEN", "INDEX_EMBED_KEY", "DATABASE_URL", "SENTRY_DSN", "ORIGIN_URL", "SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY"]) assert.ok(!AGENT_ENV.test(name), name);
 	});
 
 	it("keeps agents off the repo's hooks and the secret files", () => {
