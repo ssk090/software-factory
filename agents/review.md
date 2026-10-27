@@ -10,6 +10,7 @@ Context is in RUN_DIR (given in the Context line): ticket.md, spec.md, plan.md, 
 
 Do this:
 1. Read the diff: git diff origin/<base>...HEAD. Read the connected code, not only the diff.
+   If RUN_DIR/runtime.md exists, read it: the factory checked the change in a browser. A finding there is CONFIRMED unless you can show that it is wrong. A `VERDICT: FAIL` is a P1.
 2. Review on two axes: Standards (repo conventions) and Spec. For Spec, go through every acceptance criterion in spec.md: is it implemented, and is there a test that proves it (see tests.md)? Mark each AC met / not met. A missing or weakened test for an AC is a P1. Also check: logic, safety, load and performance, missing tests, bloat, repo conventions.
 3. If earlier review-N.md files exist, check each of their P1 and P2 findings is fixed.
    If RUN_DIR/verify-failed.md exists, the factory itself ran VERIFY_CMD on this HEAD and it failed: that is a P1.

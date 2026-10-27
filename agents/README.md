@@ -19,11 +19,12 @@ conversation when the factory runs again.
 | docs writer | `docs.md` (optional) | diff, spec | docs commits, `docs.md` |
 | PR summary writer | `pr-summary.md` | commits, diff, spec, reviews | `pr-title.txt`, `pr-body.md` |
 | code reviewer | `review.md` | diff, spec, earlier reviews | `review-N.md` (ends with VERDICT: PASS or FIX) |
+| runtime checker | `runtime.md` | diff, spec, plan | `runtime.md` (ends with VERDICT: PASS or FAIL). Only with RUNTIME_CHECK=1 and a UI change |
 | fixer | `fix.md` | latest review | commits, `fix-notes.md` |
 | coordinator | `coordinate.md` | `failure-N.md` (a failed check, a refused push, a secret the scan found), spec, plan, tests | a fix on the branch, `repair-N.md` (ends with LESSON:), or `blocked.md` |
 | judge | `judge.md` | everything, plus the real diff | `judge.json`: criteria met, hallucinations, score, prompt fixes |
 
-Flow: spec -> planner -> (human gate) -> test writer -> coder -> docs -> PR summary -> draft PR -> review <-> fix -> PR summary again -> judge -> ready. The coordinator is called in between when a check the factory runs fails (a refused push, the secret scan, VERIFY_CMD after the coder's second try); the phase runs again after its repair.
+Flow: spec -> planner -> (human gate) -> test writer -> coder -> docs -> runtime (UI change, RUNTIME_CHECK=1) -> PR summary -> draft PR -> review <-> fix -> PR summary again -> judge -> ready. The coordinator runs between phases when a check the factory runs fails. The checks are a refused push, the secret scan, and VERIFY_CMD after the coder's second try. The phase runs again after its repair.
 
 Each file starts with a header:
 

@@ -24,6 +24,8 @@ export type Config = {
 	readonly base: string;
 	readonly setupCmd: string;
 	readonly verifyCmd: string;
+	/** Run a browser check of UI changes before the review (RUNTIME_CHECK=1). */
+	readonly runtimeCheck: boolean;
 	readonly statuses: Statuses;
 	readonly specGate: boolean;
 	readonly maxReviewRounds: number;
@@ -128,6 +130,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, here = resolve(
 		base: env.BASE || "develop",
 		setupCmd: env.SETUP_CMD ?? "",
 		verifyCmd: env.VERIFY_CMD ?? "",
+		runtimeCheck: flag(env.RUNTIME_CHECK, false),
 		statuses: {
 			todo: env.S_TODO || "to do",
 			specReview: env.S_SPEC_REVIEW || "spec review",

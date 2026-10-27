@@ -6,7 +6,7 @@
 // same conversation and the same submission, and the agent continues mid-step.
 //
 //   start -> admit -> fetch -> worktree -> spec -> plan -> post-spec -> gate (you approve)
-//   -> setup -> verify-base -> test -> code -> verify-code [-> code #2] -> docs -> pr-summary
+//   -> setup -> verify-base -> test -> code -> verify-code [-> code #2] -> docs -> runtime (UI) -> pr-summary
 //   -> pr -> review <-> fix -> pr-summary #2 -> judge -> report
 //
 // Effects outside the session are made safe to repeat: tracker statuses and pushes are idempotent,
@@ -72,7 +72,7 @@ export type PipelineInput = {
 type Step = { role: string; round: number; attempt: number; conversationId: number; model: string; started: number };
 type Phase =
 	| "start" | "admit" | "fetch" | "worktree" | "spec" | "plan" | "post-spec" | "gate" | "setup" | "verify-base"
-	| "test" | "code" | "verify-code" | "docs" | "pr-summary" | "pr" | "review" | "fix" | "push-fix" | "pr-summary-2" | "judge" | "report";
+	| "test" | "code" | "verify-code" | "docs" | "runtime" | "pr-summary" | "pr" | "review" | "fix" | "push-fix" | "pr-summary-2" | "judge" | "report";
 export type Checkpoint = {
 	phase: Phase;
 	/** The running agent step, or null between steps. */
@@ -112,6 +112,7 @@ export const PHASES: readonly { phase: Phase; label: string }[] = [
 	{ phase: "code", label: "Write the code" },
 	{ phase: "verify-code", label: "Verify the code" },
 	{ phase: "docs", label: "Docs" },
+	{ phase: "runtime", label: "Browser check" },
 	{ phase: "pr-summary", label: "PR summary" },
 	{ phase: "pr", label: "Open the PR" },
 	{ phase: "review", label: "Review" },
@@ -224,7 +225,7 @@ const SETUP_PHASES = new Set<Phase>(["start", "admit", "fetch", "worktree"]);
 /** Everything a fresh run removes from the run folder. */
 const RUN_OUTPUTS = [
 	"spec.md", "plan.md", "tests.md", "test-changes.md", "blocked.md", "docs.md", "fix-notes.md", "pr-title.txt",
-	"pr-body.md", "judge.json", "judge.txt", "verify-failed.md", "guard.log",
+	"pr-body.md", "judge.json", "judge.txt", "verify-failed.md", "guard.log", "runtime.md",
 ];
 
 export function createPipeline(deps: PipelineDeps) {
@@ -723,6 +724,10 @@ export function createPipeline(deps: PipelineDeps) {
 	const readOnly = async (ticket: Ticket, stepHead: string | null, label: string) => {
 		if (stepHead !== null && (await head(ticket.worktree!)) !== stepHead) throw new Blocked(`${label} committed to ${ticket.branch}, but it may only read`);
 	};
+	/** Files whose change can change what a browser sees. */
+	const UI_FILES = /\.(?:tsx|jsx|css|scss|sass|less|html)$/i;
+	const touchesUi = async (worktree: string) =>
+		(await gitOk(worktree, "diff", "--name-only", `origin/${config.base}...HEAD`)).split("\n").some((file) => UI_FILES.test(file));
 	const onBranch = async (ticket: Ticket, label: string) => {
 		if ((await currentBranch(ticket.worktree!)) !== ticket.branch) throw new Blocked(`${label} left branch ${ticket.branch}`);
 	};
@@ -993,7 +998,34 @@ export function createPipeline(deps: PipelineDeps) {
 				if (!(await runAgent(task, runtime, context, "docs", 1))) return;
 				await onBranch(await ticketOf(task, runtime, context), "docs writer");
 			}
-			await advance(task, runtime, context, { phase: "pr-summary", step: null });
+			await advance(task, runtime, context, { phase: "runtime", step: null });
+		},
+		runtime: async (task, runtime, context) => {
+			const ticket = await ticketOf(task, runtime, context);
+			// shortcut: one browser check per run, before the first review. A fix round that changes UI
+			// reuses the result; make this a per-round check when that matters.
+			const why = !config.runtimeCheck
+				? "RUNTIME_CHECK is off"
+				: !(await hasRole(config.here, "runtime"))
+					? "there is no runtime agent (agents/runtime.md)"
+					: !(await touchesUi(ticket.worktree!))
+						? "the change touches no UI file"
+						: null;
+			if (why !== null) {
+				await advance(task, runtime, context, { phase: "pr-summary", step: null }, (t) => {
+					if (config.runtimeCheck) addEvent(t, { kind: "runtime", text: `Browser check skipped: ${why}` });
+				});
+				return;
+			}
+			if (!(await runAgent(task, runtime, context, "runtime", 1))) return;
+			const after = await ticketOf(task, runtime, context);
+			await readOnly(after, task.state.checkpoint.stepHead, "runtime checker");
+			const check = await readText(join(after.run!, "runtime.md"));
+			if (check.trim() === "") throw new Blocked("runtime checker wrote no runtime.md");
+			const verdict = /^VERDICT: FAIL$/m.test(check) ? "FAIL" : /^VERDICT: PASS$/m.test(check) ? "PASS" : "not run";
+			await advance(task, runtime, context, { phase: "pr-summary", step: null }, (t) => {
+				addEvent(t, { kind: "runtime", level: verdict === "FAIL" ? "warn" : "info", text: `Browser check: ${verdict} (runtime.md)` });
+			});
 		},
 		"pr-summary": async (task, runtime, context) => {
 			if (!(await runAgent(task, runtime, context, "pr-summary", 1))) return;

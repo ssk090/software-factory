@@ -19,6 +19,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY durable/package.json durable/package-lock.json /factory/durable/
 RUN cd /factory/durable && npm ci --omit=dev --no-audit --no-fund
 
+# The runtime agent's browser (agents/runtime.md): Playwright with Chromium, including the system
+# libraries Chromium needs. The ticket containers are this same image, so the check runs in the sandbox.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browser/browsers
+ENV NODE_PATH=/opt/browser/node_modules
+RUN mkdir -p /opt/browser && cd /opt/browser \
+    && npm init -y >/dev/null && npm install --no-audit --no-fund playwright@1.64.1 \
+    && DEBIAN_FRONTEND=noninteractive npx playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
 COPY . /factory
 WORKDIR /factory
 RUN ln -s /factory/durable/bin/ff /usr/local/bin/ff

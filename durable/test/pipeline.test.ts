@@ -88,6 +88,41 @@ describe("pipeline", { timeout: 120_000 }, () => {
 		}
 	});
 
+	it("checks a UI change in a browser before the review when RUNTIME_CHECK=1", async () => {
+		const w = await world({ coderFile: ["src/Form.tsx", "export const Form = () => null;\n"] }, { RUNTIME_CHECK: "1" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-34", { gate: false });
+			const t = await settle(factory, "T-34");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			const roles = t.steps.map((s) => s.name);
+			const at = roles.indexOf("runtime-1-1");
+			assert.ok(at > 0, roles.join(" "));
+			assert.equal(roles[at - 1], "docs-1-1", "the check runs after the docs step");
+			assert.equal(roles[at + 1], "pr-summary-1-1", "and before the PR summary");
+			assert.ok(t.events.some((e) => e.text === "Browser check: PASS (runtime.md)"), t.events.map((e) => e.text).join("\n"));
+			assert.match(await readFile(join(t.run!, "runtime.md"), "utf8"), /^VERDICT: PASS$/m);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("skips the browser check when the change touches no UI file, and says why", async () => {
+		const w = await world({}, { RUNTIME_CHECK: "1" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-35", { gate: false });
+			const t = await settle(factory, "T-35");
+			assert.equal(t.state, "in_review", t.blocked ?? "");
+			assert.ok(!t.steps.some((s) => s.role === "runtime"), t.steps.map((s) => s.name).join(" "));
+			assert.ok(t.events.some((e) => e.text === "Browser check skipped: the change touches no UI file"), t.events.map((e) => e.text).join("\n"));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("waits at the gate for your approval, and the note reaches the coder", async () => {
 		let coderSaw = "";
 		const w = await world({ onCoder: (m) => (coderSaw = JSON.stringify(m)) });

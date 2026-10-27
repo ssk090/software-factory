@@ -25,6 +25,7 @@
     "docs": "code",
     "pr-summary": "code",
     "fix": "code",
-    "judge": "review"
+    "judge": "review",
+    "runtime": "review"
   }
 }
