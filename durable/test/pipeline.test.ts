@@ -588,6 +588,27 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("runs SETUP_CMD again when a resumed run gets a new worktree", async () => {
+		const w = await world({}, { SETUP_CMD: "echo made > setup-marker", VERIFY_CMD: "! test -f file.txt" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-60", { gate: false });
+			let t = await settle(factory, "T-60");
+			assert.equal(t.state, "blocked");
+			assert.equal(await readFile(join(t.worktree!, "setup-marker"), "utf8"), "made\n");
+			// ff forget / ff gc removed the worktree: the new one has no node_modules, so setup runs again.
+			await rm(t.worktree!, { recursive: true, force: true });
+			await factory.start("T-60", { gate: false });
+			t = await settle(factory, "T-60");
+			assert.equal(t.state, "blocked");
+			assert.equal(await readFile(join(t.worktree!, "setup-marker"), "utf8"), "made\n", "SETUP_CMD ran again");
+			assert.ok(t.events.some((e) => /SETUP_CMD runs again/.test(e.text)));
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);
