@@ -55,6 +55,19 @@ describe("onboarding setup", () => {
 		}
 	});
 
+	it("shows a stored credential without the secret", async () => {
+		const w = await withEnv();
+		try {
+			await mkdir(join(w.data, "state"), { recursive: true });
+			await writeFile(join(w.data, "state", "auth.json"), JSON.stringify({ openai: { type: "api_key", key: "sk-secret" } }), { mode: 0o600 });
+			const view = await setupView(w.config);
+			assert.deepEqual(view.logins, [{ provider: "openai", type: "api_key" }]);
+			assert.ok(!JSON.stringify(view).includes("sk-secret"), "the credential does not come back");
+		} finally {
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("writes and clears keys with mode 600, and refuses bad input", async () => {
 		const w = await withEnv();
 		try {

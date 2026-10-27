@@ -29,7 +29,7 @@ One dashboard shows what needs you:
   can watch refresh every 1, 5 or 10 seconds.
 
 Needs: Node 22.19 or newer, git 2.31 or newer, gh, Docker (for the sandbox), a ClickUp token, and an
-API key for at least one model provider (Anthropic, OpenAI, ...). Sentry is optional.
+An API key or an OAuth sign-in for at least one model provider (Anthropic, OpenAI, ...). Sentry is optional.
 
 Ideas taken from:
 - [Pi Durable](https://earendil.com/posts/pi-durable/): the runtime. Tasks with checkpoints, conversations owned by tasks, documents committed with them, steering, watches.
@@ -120,7 +120,8 @@ The ticket's status in ClickUp shows where it is; the factory's own state is in 
 - **Review loop:** each review goes on the PR as one review (a comment, never an approval): `review-N.md` is its body, and the reviewer's `review-N.comments.json` holds up to 5 inline comments, only for a root cause or a bug it verified, or a question about intent. Each starts with its severity (`🔴 issue (blocking):`, `🟡 issue:`, `❓ question:`), and a fix of a few lines comes as a GitHub `suggestion` block the author applies in one click. When GitHub refuses a comment's line (outside the diff), the comments go into the review body instead. The repo's own review skill (`review-a`, for example) sets the checklist. On `VERDICT: PASS` the PR is marked ready; otherwise it stays a draft after `MAX_REVIEW_ROUNDS`.
 - **Verdict rules:** the verdict is the last line of `review-N.md`. A P1 or P2 finding in the body makes it FIX, also when the model writes PASS.
 - **Judge (best effort):** the judge has its own lane, so it is not the reviewer's model. It grades the run in `judge.json`: criteria met, hallucinations, and a 1 to 5 score. It posts the score on the PR. A `not_met` criterion or a score below `JUDGE_MIN_SCORE` keeps the PR a draft. The full report is on the ticket. Its prompt suggestions become lessons for the agent they name.
-- **Quality:** `ff scoreboard` and the dashboard's *Quality* page show the judge score, criteria met, review rounds to PASS, repairs, failed checks, cost and time for every run. Each step records a hash of its prompt, its skills and its lane, so a prompt or model change can be compared. When a PR is merged or closed, the factory reads its review and comment bodies and keeps what people asked for as lessons.- **A failing model:** after the provider's own retries, the step moves to the next model in its role's lane (a new attempt, e.g. `code-1-2`); when none is left the ticket is blocked. A model that failed is skipped only for the rest of that run. `AGENT_TIMEOUT` bounds each step.
+- **Quality:** `ff scoreboard` and the dashboard's *Quality* page show the judge score, criteria met, review rounds to PASS, repairs, failed checks, cost and time for every run. Each step records a hash of its prompt, its skills and its lane, so a prompt or model change can be compared. When a PR is merged or closed, the factory reads its review and comment bodies and keeps what people asked for as lessons.
+- **A failing model:** after the provider's own retries, the step moves to the next model in its role's lane (a new attempt, e.g. `code-1-2`); when none is left the ticket is blocked. A model that failed is skipped only for the rest of that run. `AGENT_TIMEOUT` bounds each step.
 - **Parallel:** up to `MAX_PARALLEL` tickets at once, and the others wait for a free cell. A ticket at the approval gate or at Select models gives its cell back, so it does not hold the queue.
 - **Running a ticket again:**
   - after a stop or a block, the next run continues at the phase where the last one stopped. The step that was cut off runs again as a new try, and finished steps do not run again. `SETUP_CMD` runs again first when the worktree is new or attached again.
@@ -160,7 +161,8 @@ Every agent file starts with a header such as `skills: implement, tdd, ponytail`
 - **Delivery:** the skill is copied into the run folder (a sandboxed agent can read it) and the agent is told to read and follow it. `runs/<ticket>/skills.log` shows which copy each agent got. Missing skills are logged and skipped; names other than `name` or `set/name` are skipped.
 
 ### Models (`durable/lanes.json`)
-Each role has an ordered chain of `<provider>/<model>` from pi-ai's catalog, preferred first. An entry without a login (its provider's API key) is skipped; a model that fails a step (after the provider's own retries) moves the step to the next entry. The reviewer does not use the coder's model family, and the judge does not use the reviewer's. Code is never graded by its author or its reviewer. When no other family has a login the step uses the same family and says so in `route.log` (`ff doctor` warns). `runs/<ticket>/route.log` shows what was skipped and why.
+Each role has an ordered chain of `<provider>/<model>` from pi-ai's catalog, preferred first. An entry without a login (an API key or an OAuth sign-in) is skipped; a model that fails a step (after the provider's own retries) moves the step to the next entry. The reviewer does not use the coder's model family, and the judge does not use the reviewer's. Code is never graded by its author or its reviewer. When no other family has a login the step uses the same family and says so in `route.log` (`ff doctor` warns). `runs/<ticket>/route.log` shows what was skipped and why.
+**OAuth sign-in.** `ff login openai` signs in with a ChatGPT account. `ff login anthropic` uses a Claude plan. `ff logout <provider>` removes a sign-in. The credentials live in `state/auth.json` with mode 600. The onboarding page shows the stored credentials.
 
 ---
 
@@ -222,7 +224,8 @@ Every model request of every agent goes through one throttle (`durable/src/throt
     ff index <cmd>             the code index agents search: build, update, status, search, map, bench, clean
     ff doctor                  check tools, repo, base branch, gh, ClickUp, sprint, Sentry, sandbox, models
     ff health                  exit 0 when the factory serves (container healthcheck)
-    ff login [KEY]             save a key in config.env (hidden input) and show the model logins
+    ff login [provider|KEY]    save an API key, or sign in to an OAuth provider (openai, anthropic, ...)
+  ff logout <provider>       remove an OAuth sign-in
     ff whoami                  your ClickUp user and team ids
 
 A ticket is a key (`CHP-1234`), an id or a URL; with `CLICKUP_ID_PREFIX=CHP`, a bare number (`1234`) too. A ticket ClickUp does not have is refused before it gets a row. A ticket deleted in ClickUp blocks with that reason: *New ClickUp ticket* makes a new one for a Sentry issue (so does *Fix this*); *Remove* (the bin icon on a row; click twice) takes a ticket that is not running off the runs list and deletes the worktree the factory made for it; the ClickUp ticket, the branch and the run folder stay, so running it again picks the branch up.
@@ -238,6 +241,7 @@ A ticket is a key (`CHP-1234`), an id or a URL; with `CLICKUP_ID_PREFIX=CHP`, a 
     cp config.example.env config.env       # the one file for settings and secrets (mode 600)
     ff whoami                              # copy the ClickUp ids into config.env
     ff login ANTHROPIC_API_KEY             # and/or OPENAI_API_KEY, SENTRY_AUTH_TOKEN, ...
+    ff login openai                        # or sign in with a ChatGPT account (OAuth)
     docker build -t software-factory .     # the sandbox image (skip with SANDBOX=none)
     ff doctor
     ff serve                               # then open http://127.0.0.1:8090
@@ -277,6 +281,7 @@ Every setting, with its default, is in `config.example.env`.
 | `state/factory.sqlite` | the Pi Durable session: every ticket, task, conversation and document |
 | `state/factory.pid`, `state/dash.url`, `state/dash.token` | the serving factory: its pid (one owner), its address, this start's token |
 | `state/usage.json` | today's model spend, per provider (the daily budget) |
+| `state/auth.json` | OAuth credentials from `ff login <provider>`, mode 600 |
 | `state/lessons.md` | lessons from repaired failures, read by the agents that change code |
 | `state/index/<repo>/` | the code index: the Merkle manifest, chunks and vectors (a ticket's own store is `<repo>-<scope>`, seeded from it) |
 | `runs/<ticket>/` | the run folder agents share: `ticket.md`, `comments.md`, `spec.md`, `plan.md`, `tests.md`, `review-N.md`, `review-N.comments.json`, `judge.json`, `pre-push.log`, `verify-N.log`, `failure-N.md`, `repair-N.md`, `route.log`, `skills.log`, `guard.log`, `git-hooks/`, `skills/` |
@@ -329,7 +334,7 @@ Planned, not built: agents that choose their skills from Superpowers and mattpoc
 
 ## Known limits
 - **Pi Durable is experimental:** its API may change between releases. Versions are pinned in `durable/package-lock.json`; upgrade on purpose and run the tests.
-- **Models through API keys:** agents run on pi-ai with providers' API keys (metered), not through agent CLIs or their subscription quotas. Spend is counted at pi-ai's catalog prices, so the budget is close to, not exactly, your bill.
+- **Models through API keys or OAuth:** agents run on pi-ai with providers' API keys (metered) or an OAuth sign-in. `ff login openai` uses a ChatGPT account and `ff login anthropic` uses a Claude plan. Spend is counted at pi-ai's catalog prices, so the budget is close to, not exactly, your bill.
 - **Tracker:** ClickUp only. **Git host:** GitHub only, through `gh`.
 - **One process per session:** run one `ff serve` per data folder (it refuses a second one).
 - **`SANDBOX=none`:** file tools are confined to the worktree and run folder, but an agent's shell can read the rest of the machine. Use docker for untrusted tickets.

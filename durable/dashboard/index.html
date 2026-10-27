@@ -978,6 +978,11 @@ function onbSaveRow() {
 function onbGroup(group) {
   return onb.keys.filter((k) => k.group === group).map(onbField);
 }
+function onbLogins() {
+  if (onb.loginError) return el("p", { class: "error" }, `The credential file could not be read: ${onb.loginError}`);
+  if (!onb.logins || onb.logins.length === 0) return el("p", { class: "muted" }, "No OAuth sign-in. In a terminal, run ff login openai to use a ChatGPT account. An API key below also works.");
+  return el("p", { class: "muted" }, `Stored credentials: ${onb.logins.map((l) => `${l.provider} (${l.type})`).join(", ")}. Remove one with ff logout <provider>.`);
+}
 function onbAgents(body) {
   if (onb === null) return;
   const roles = onb.agents.map((a) => a.role);
@@ -1094,6 +1099,7 @@ function drawOnboarding() {
   } else if (step === "models") {
     body.append(onbCard("Model provider keys",
       el("p", { class: "muted" }, "One key for each provider you use. The factory skips a model without a login."),
+      onbLogins(),
       ...onbGroup("models"),
       onbTestRow("models", "providers"),
       onbSaveRow()));

@@ -11,6 +11,7 @@ import { type Config, loadConfig } from "./config.ts";
 import type { Ticket } from "./docs.ts";
 import { git, run, useOriginUrl } from "./git.ts";
 import { GitHubCli } from "./github.ts";
+import { FileCredentials, deviceId } from "./auth.ts";
 import { Factory, type HostDeps, type Scoreboard } from "./host.ts";
 import { requestJson } from "./http.ts";
 import { indexCommand } from "./index/cli.ts";
@@ -47,7 +48,8 @@ const USAGE = `usage: ff <command>
   gc [days]                  remove worktrees of merged or closed PRs, or idle ones
   doctor                     check everything a run needs
   health                     exit 0 when the factory serves (container healthcheck)
-  login [KEY]                save a key in config.env (hidden input) and show the model logins
+  login [provider|KEY]       save an API key, or sign in to an OAuth provider (openai, anthropic, ...)
+  logout <provider>          remove an OAuth sign-in
   whoami                     your ClickUp user and team ids`;
 
 const ticketArg = (args: string[]) => {
@@ -61,11 +63,13 @@ function fail(message: string): never {
 	process.exit(1);
 }
 
+const credentials = (config: Config) => new FileCredentials(join(config.stateDir, "auth.json"));
+
 function deps(config: Config, extra: Partial<HostDeps> = {}): Promise<HostDeps> {
 	const lanesFile = process.env.LANES_FILE || join(config.here, "durable", "lanes.json");
 	return loadLanes(lanesFile).then((lanes) => ({
 		config,
-		models: builtinModels(),
+		models: builtinModels({ credentials: credentials(config) }),
 		lanes,
 		lanesFile,
 		tracker: new ClickUp(config),
@@ -186,8 +190,9 @@ const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
 async function login(config: Config, key?: string) {
 	const file = process.env.FACTORY_CONFIG || join(config.here, "config.env");
+	if (key !== undefined && /^[a-z][a-z0-9-]*$/.test(key)) return oauthLogin(config, key);
 	if (key !== undefined) {
-		if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) fail("key names look like ANTHROPIC_API_KEY");
+		if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) fail("use a provider (openai, anthropic) or a key name (OPENAI_API_KEY)");
 		const value = await hiddenInput(`Value for ${key} (hidden): `);
 		const old = await readFile(file, "utf8").catch(() => "");
 		const kept = old.split("\n").filter((l) => !l.startsWith(`${key}=`) && l !== "");
@@ -197,7 +202,11 @@ async function login(config: Config, key?: string) {
 		console.log(`saved ${key} in ${file}`);
 	}
 	const lanes = await loadLanes(process.env.LANES_FILE || join(config.here, "durable", "lanes.json"));
-	const models = builtinModels();
+	const models = builtinModels({ credentials: credentials(config) });
+	const oauth = models.getProviders().filter((p) => p.auth.oauth !== undefined).map((p) => p.id);
+	const stored = await credentials(config).list();
+	for (const info of stored) console.log(`  ${info.providerId.padEnd(16)} ${info.type === "oauth" ? "signed in (OAuth)" : "key stored"}`);
+	if (oauth.length > 0) console.log(`  oauth: ${oauth.join(", ")} (ff login <provider>)`);
 	const seen = new Set<string>();
 	for (const entries of Object.values(lanes.lanes)) {
 		for (const entry of entries) {
@@ -208,6 +217,60 @@ async function login(config: Config, key?: string) {
 		}
 	}
 	console.log("  keys: the provider's API key, e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY (ff login <KEY>); also CLICKUP_TOKEN, SENTRY_AUTH_TOKEN, GH_TOKEN");
+}
+
+/** Sign in to a provider with OAuth (OpenAI's ChatGPT account, Anthropic's Claude plan, and others). */
+async function oauthLogin(config: Config, providerId: string) {
+	const models = builtinModels({ credentials: credentials(config) });
+	const provider = models.getProviders().find((p) => p.id === providerId);
+	if (provider === undefined) fail(`unknown provider ${providerId}: ff login lists them`);
+	if (provider.auth.oauth === undefined) fail(`${provider.name} has no OAuth login. Save its API key: ff login ${providerId.toUpperCase()}_API_KEY`);
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	const ask = (question: string) => new Promise<string>((resolve) => rl.question(question, resolve));
+	const id = await deviceId(config);
+	try {
+		await models.login(
+			providerId,
+			"oauth",
+			{
+				signal: new AbortController().signal,
+				prompt: async (prompt) => {
+					if (prompt.type === "select") {
+						console.log(`
+${prompt.message}`);
+						prompt.options.forEach((option, i) => console.log(`  ${i + 1}. ${option.label}${option.description ? ` (${option.description})` : ""}`));
+						const chosen = Number(await ask(`Choose 1-${prompt.options.length}: `)) - 1;
+						const option = prompt.options[chosen];
+						if (option === undefined) throw new Error("invalid choice");
+						return option.id;
+					}
+					return ask(`${prompt.message}${prompt.placeholder ? ` (${prompt.placeholder})` : ""}: `);
+				},
+				notify: (event) => {
+					if (event.type === "auth_url") console.log(`
+Open this URL in your browser:
+${event.url}${event.instructions ? `
+${event.instructions}` : ""}`);
+					else if (event.type === "device_code") console.log(`
+Open ${event.verificationUri} and enter the code ${event.userCode}`);
+					else console.log(event.message);
+				},
+			},
+			{ getDeviceId: () => id, agentName: "software-factory" },
+		);
+	} finally {
+		rl.close();
+	}
+	const auth = await models.getAuth(providerId);
+	if (auth === undefined) fail(`the login finished, but ${providerId} has no usable credential`);
+	console.log(`signed in to ${providerId} (${auth.source ?? "OAuth"}); credentials in ${join(config.stateDir, "auth.json")}`);
+}
+
+/** Remove an OAuth sign-in. */
+async function logout(config: Config, provider?: string) {
+	if (provider === undefined || provider === "") fail("usage: ff logout <provider>");
+	await credentials(config).delete(provider);
+	console.log(`logged out of ${provider}`);
 }
 
 function hiddenInput(prompt: string): Promise<string> {
@@ -274,7 +337,7 @@ async function doctor(config: Config) {
 		(await run("docker", ["image", "inspect", config.sandboxImage])).code === 0 ? ok(`sandbox image ${config.sandboxImage}`) : no(`no image ${config.sandboxImage}: docker build -t ${config.sandboxImage} .`);
 	} else warn("SANDBOX=none: agents' commands run unconfined on this machine");
 	const lanes = await loadLanes(process.env.LANES_FILE || join(config.here, "durable", "lanes.json"));
-	const models = builtinModels();
+	const models = builtinModels({ credentials: credentials(config) });
 	let coder: string | null = null;
 	let reviewer: string | null = null;
 	for (const role of ["spec", "plan", "test", "code", "review", "fix", "judge"]) {
@@ -443,6 +506,8 @@ async function main() {
 		}
 		case "login":
 			return login(config, args[0]);
+		case "logout":
+			return logout(config, args[0]);
 		case "whoami": {
 			const headers = { Authorization: config.clickup.token };
 			const user = await requestJson<{ user: { id: number; username: string } }>("GET", "https://api.clickup.com/api/v2/user", { headers });
