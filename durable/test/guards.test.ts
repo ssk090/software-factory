@@ -9,6 +9,7 @@ import { useOriginUrl } from "../src/git.ts";
 import { verifyProblem } from "../src/lessons.ts";
 import { notInPlan, unneededFiles } from "../src/scope.ts";
 import { writeGuardHooks } from "../src/git.ts";
+import { parseBackends, plannedRepos } from "../src/backends.ts";
 import { inside } from "../src/env.ts";
 import { fileRoots, HOOK_BYPASS, SECRET_PATHS } from "../src/roles.ts";
 import { knownSecrets, redact, scanBranch, scanText } from "../src/secrets.ts";
@@ -169,6 +170,17 @@ describe("guardrails", () => {
 		assert.ok(!(await may("code", true, "/data/backends/api/.git/config")), "nobody writes the backend clone itself");
 		assert.ok(!(await may("code", true, "/data/worktrees/T-2.backends/api/x")), "nor another ticket's backend worktree");
 		assert.ok(!(await may("code", true, "/elsewhere/chip1-other/x")), "nor a repo outside BACKEND_REPOS");
+	});
+
+	it("reads BACKEND_REPOS and the plan's Repos: line", () => {
+		assert.deepEqual(parseBackends("api=git@github.com-altir:altirllc/chip1-api-hub.git  tx=https://github.com/altirllc/chip1-transaction"), [
+			{ name: "api", url: "git@github.com-altir:altirllc/chip1-api-hub.git", slug: "altirllc/chip1-api-hub" },
+			{ name: "tx", url: "https://github.com/altirllc/chip1-transaction", slug: "altirllc/chip1-transaction" },
+		]);
+		assert.throws(() => parseBackends("api"), /not name=url/);
+		assert.throws(() => parseBackends("a=x a=y"), /listed twice/);
+		assert.deepEqual(plannedRepos("Plan\nRepos: chip1-webui (form, validation), chip1-api-hub (new field)\n"), ["chip1-webui", "chip1-api-hub"]);
+		assert.deepEqual(plannedRepos("no repos line"), []);
 	});
 
 	it("keeps an agent on its ticket's branch in a backend repo too", async () => {

@@ -2,6 +2,7 @@
 // 11-extension-state). Every change is part of an atomic commit, so after a crash a ticket's state
 // matches what its pipeline task and agents actually did. The dashboard watches these documents.
 import { defineDoc, defineDocFamily, type JsonObject } from "@earendil-works/pi-durable";
+import type { BackendPr } from "./backends.ts";
 
 /** What one agent step was: a conversation owned by the ticket's pipeline task. */
 export type StepRecord = {
@@ -99,7 +100,7 @@ export type Ticket = {
 	reviews: { round: number; verdict: "PASS" | "FIX"; file: string }[];
 	pr: string | null;
 	/** The draft PRs the factory opened in backend repos (BACKEND_REPOS), by repo name. */
-	backendPrs?: { repo: string; pr: string }[];
+	backendPrs?: BackendPr[];
 	judge: { score: number; summary: string } | null;
 	blocked: string | null;
 	steps: StepRecord[];
