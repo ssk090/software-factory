@@ -457,6 +457,48 @@ describe("pipeline", { timeout: 600_000 }, () => {
 		}
 	});
 
+	it("blocks the ticket when a reader changes the worktree without a commit", async () => {
+		const w = await world({ reviewBash: "echo sneaky >> file.txt" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-50", { gate: false });
+			const t = await settle(factory, "T-50");
+			assert.equal(t.state, "blocked");
+			assert.match(t.blocked ?? "", /reviewer changed the worktree, but it may only read: M file\.txt/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("blocks the ticket when the PR summary writer changes the worktree", async () => {
+		const w = await world({ summaryBash: "echo sneaky >> file.txt" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-51", { gate: false });
+			const t = await settle(factory, "T-51");
+			assert.equal(t.state, "blocked");
+			assert.match(t.blocked ?? "", /PR summary writer changed the worktree, but it may only read: M file\.txt/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
+	it("blocks the ticket when the docs writer deletes a frozen spec test", async () => {
+		const w = await world({ docsBash: "git rm -q ac1.test && git commit -qm 'docs: drop the test'" });
+		const factory = await Factory.open(w.deps);
+		try {
+			await factory.start("T-52", { gate: false });
+			const t = await settle(factory, "T-52");
+			assert.equal(t.state, "blocked");
+			assert.match(t.blocked ?? "", /docs writer deleted tests written from the spec: ac1\.test/);
+		} finally {
+			await factory.close();
+			await rm(w.root, { recursive: true, force: true });
+		}
+	});
+
 	it("a run after a stop continues where it stopped; a run after a finished one starts over", async () => {
 		const w = await world({ coderSleep: 30 });
 		let factory = await Factory.open(w.deps);

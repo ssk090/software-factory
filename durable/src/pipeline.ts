@@ -740,8 +740,12 @@ export function createPipeline(deps: PipelineDeps) {
 		});
 	};
 
+	/** A reader only reads: HEAD must not move, and the worktree must hold only committed work. */
 	const readOnly = async (ticket: Ticket, stepHead: string | null, label: string) => {
 		if (stepHead !== null && (await head(ticket.worktree!)) !== stepHead) throw new Blocked(`${label} committed to ${ticket.branch}, but it may only read`);
+		// The file-tool guard does not see a write through bash: the worktree itself is the proof.
+		const dirty = (await gitOk(ticket.worktree!, "status", "--porcelain")).split("\n").map((l) => l.trim()).filter((l) => l !== "");
+		if (dirty.length > 0) throw new Blocked(`${label} changed the worktree, but it may only read: ${dirty.slice(0, 10).join(", ")}`);
 	};
 	/** The ticket's backend worktrees that exist (a repo that could not be cloned has none). */
 	const backendsOf = async (ticket: Ticket) => {
@@ -1143,7 +1147,9 @@ export function createPipeline(deps: PipelineDeps) {
 		docs: async (task, runtime, context) => {
 			if (await hasRole(config.here, "docs")) {
 				if (!(await runAgent(task, runtime, context, "docs", 1))) return;
-				await onBranch(await ticketOf(task, runtime, context), "docs writer");
+				const after = await ticketOf(task, runtime, context);
+				await onBranch(after, "docs writer");
+				await keptTests(after, task.state.checkpoint.frozen, "docs writer");
 			}
 			await advance(task, runtime, context, { phase: "runtime", step: null });
 		},
@@ -1177,6 +1183,7 @@ export function createPipeline(deps: PipelineDeps) {
 		"pr-summary": async (task, runtime, context) => {
 			if (!(await runAgent(task, runtime, context, "pr-summary", 1))) return;
 			const ticket = await ticketOf(task, runtime, context);
+			await readOnly(ticket, task.state.checkpoint.stepHead, "PR summary writer");
 			if (!(await readText(join(ticket.run!, "pr-title.txt"))).trim() || !(await readText(join(ticket.run!, "pr-body.md"))).trim()) {
 				throw new Blocked("PR summary writer wrote no title or body");
 			}
@@ -1265,6 +1272,7 @@ export function createPipeline(deps: PipelineDeps) {
 			// The code changed since the first summary.
 			if (!(await runAgent(task, runtime, context, "pr-summary", 2))) return;
 			const ticket = await ticketOf(task, runtime, context);
+			await readOnly(ticket, task.state.checkpoint.stepHead, "PR summary writer");
 			const title = (await readText(join(ticket.run!, "pr-title.txt"))).trim();
 			const body = withBackendPrs(await readText(join(ticket.run!, "pr-body.md")), ticket.backendPrs ?? []);
 			if (title && body.trim()) {
@@ -1276,9 +1284,10 @@ export function createPipeline(deps: PipelineDeps) {
 		judge: async (task, runtime, context) => {
 			// Best effort: a failed judge is logged and the ticket carries on.
 			let judge: Ticket["judge"] = null;
+			let ticket: Ticket | null = null;
 			try {
 				if (!(await runAgent(task, runtime, context, "judge", 1))) return;
-				const ticket = await ticketOf(task, runtime, context);
+				ticket = await ticketOf(task, runtime, context);
 				const parsed = JSON.parse(await readText(join(ticket.run!, "judge.json"))) as { score?: unknown; summary?: unknown; criteria?: { status?: string }[]; hallucinations?: unknown[] };
 				if (typeof parsed.score === "number") {
 					judge = { score: parsed.score, summary: typeof parsed.summary === "string" ? parsed.summary : "" };
@@ -1294,6 +1303,8 @@ export function createPipeline(deps: PipelineDeps) {
 				if (error instanceof Blocked) deps.log(`judge skipped: ${error.message}`);
 				else if (!(error instanceof SyntaxError)) throw error;
 			}
+			// A dirty worktree is not a failed judge: the ticket stops, the same as every other reader.
+			if (ticket !== null) await readOnly(ticket, task.state.checkpoint.stepHead, "judge");
 			await advance(task, runtime, context, { phase: "report", step: null }, (t) => {
 				t.judge = judge;
 				addEvent(t, judge ? { kind: "review", text: `Judge: ${judge.score}/5. ${judge.summary}`.slice(0, 400) } : { kind: "review", level: "warn", text: "Judge skipped (best effort)" });
