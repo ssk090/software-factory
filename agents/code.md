@@ -17,7 +17,7 @@ Rules:
 - Never write secrets or .env files.
 
 Do this:
-0. If RUN_DIR/verify-failed.md exists, you are the second try: the factory ran VERIFY_CMD on your commits and it failed. Fix that first, from the existing commits.
+0. If RUN_DIR/verify-failed.md exists, you are the second try: the factory ran VERIFY_CMD on your commits and it failed. Fix that first, from the existing commits. When the file also quotes a failure on the base branch, fix only the failures that this ticket added.
 1. Work test by test through tests.md: make each failing test pass (green), then refactor.
 2. Run VERIFY_CMD (from Context) until it is clean. If none is given, use the checks the repo documents. Run the full test suite once at the end.
 3. Commit in logical commits. Put the ticket ID in each commit message.
