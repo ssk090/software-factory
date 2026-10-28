@@ -1,6 +1,7 @@
 # Everything the factory needs, so any machine with Docker can run it. The same image is the
 # sandbox: in SANDBOX=docker each ticket's agent commands run in a container of it.
-FROM node:22-bookworm-slim
+# The Node version in .node-version (CI checks they match); it brings npm 10.9.9, package.json's packageManager.
+FROM node:22.23.4-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl jq python3 perl procps ca-certificates openssh-client gnupg \
@@ -15,8 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Pi Durable needs Node 22.19 or newer
     && node -e 'const [a, b] = process.versions.node.split(".").map(Number); if (a < 22 || (a === 22 && b < 19)) { console.error(`node ${process.versions.node} is too old`); process.exit(1); }'
 
-# The factory's core: Pi Durable and pi-ai, pinned by durable/package-lock.json.
-COPY durable/package.json durable/package-lock.json /factory/durable/
+# The factory's core: Pi Durable and pi-ai, pinned by durable/package-lock.json. durable/.npmrc keeps
+# the dependencies' install scripts from running.
+COPY durable/package.json durable/package-lock.json durable/.npmrc /factory/durable/
 RUN cd /factory/durable && npm ci --omit=dev --no-audit --no-fund
 
 # The runtime agent's browser (agents/runtime.md): Playwright with Chromium, including the system
