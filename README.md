@@ -120,8 +120,9 @@ The ticket's status in ClickUp shows where it is; the factory's own state is in 
 - **Review loop:** each review goes on the PR as one review (a comment, never an approval): `review-N.md` is its body, and the reviewer's `review-N.comments.json` holds up to 5 inline comments, only for a root cause or a bug it verified, or a question about intent. Each starts with its severity (`🔴 issue (blocking):`, `🟡 issue:`, `❓ question:`), and a fix of a few lines comes as a GitHub `suggestion` block the author applies in one click. When GitHub refuses a comment's line (outside the diff), the comments go into the review body instead. The repo's own review skill (`review-a`, for example) sets the checklist. On `VERDICT: PASS` the PR is marked ready; otherwise it stays a draft after `MAX_REVIEW_ROUNDS`.
 - **Verdict rules:** the verdict is the last line of `review-N.md`. A P1 or P2 finding in the body makes it FIX, also when the model writes PASS.
 - **Judge (best effort):** the judge has its own lane, so it is not the reviewer's model. It grades the run in `judge.json`: criteria met, hallucinations, and a 1 to 5 score. It posts the score on the PR. A `not_met` criterion or a score below `JUDGE_MIN_SCORE` keeps the PR a draft. The full report is on the ticket. Its prompt suggestions become lessons for the agent they name.
-- **Quality:** `ff scoreboard` and the dashboard's *Quality* page show the judge score, criteria met, review rounds to PASS, repairs, failed checks, cost and time for every run. Each step records a hash of its prompt, its skills and its lane, so a prompt or model change can be compared. When a PR is merged or closed, the factory reads its review and comment bodies and keeps what people asked for as lessons.- **A failing model:** after the provider's own retries, the step moves to the next model in its role's lane (a new attempt, e.g. `code-1-2`); when none is left the ticket is blocked. A model that failed is skipped only for the rest of that run. `AGENT_TIMEOUT` bounds each step.
-- **Parallel:** up to `MAX_PARALLEL` tickets at once, and the others wait for a free cell. A ticket at the approval gate or at Select models gives its cell back, so it does not hold the queue.
+- **Quality:** `ff scoreboard` and the dashboard's *Quality* page show the numbers of every run. Judge score, criteria met, review rounds to PASS, repairs, failed checks, human comments and human rework are there. So are the cost and the time. Each step records a hash of its prompt, its skills and its lane, so a prompt or model change can be compared. When a PR is merged or closed, the factory reads its review and comment bodies and keeps what people asked for as lessons.
+- **A failing model:** after the provider's own retries, the step moves to the next model in its role's lane (a new attempt, e.g. `code-1-2`); when none is left the ticket is blocked. A model that failed is skipped only for the rest of that run. `AGENT_TIMEOUT` bounds each step.
+- **Parallel:** up to `MAX_PARALLEL` tickets at once, each in one of `SLOTS` (default 8) cells, and the others wait for a free cell. A ticket at the approval gate or at Select models gives its cell back, so it does not hold the queue.
 - **Running a ticket again:**
   - after a stop or a block, the next run continues at the phase where the last one stopped. The step that was cut off runs again as a new try, and finished steps do not run again. `SETUP_CMD` runs again first when the worktree is new or attached again.
   - after a finished run (PR in review), or with `--fresh`, it starts over from the spec. A branch that was already pushed is never rewritten (the factory never force-pushes): the new run gets the next free name, `<branch>-2`, and its own PR.
@@ -141,6 +142,7 @@ Agents (`agents/*.md`, see `agents/README.md`): spec writer, planner, test write
 | secrets | an agent's shell gets no tokens or API keys (the model is called by the factory, not by the agent). |
 | ports, compose projects | each running ticket takes a cell slot: `PORT_BASE` = `CELL_PORT_START + slot × CELL_PORT_SPAN`, `PORT`, and `COMPOSE_PROJECT_NAME=factory-<ticket>`. |
 | the machine (`SANDBOX=docker`) | each ticket's agent commands run in its own container of `SANDBOX_IMAGE`, which sees only its worktree, its run folder, the repo's `.git`, and its backend worktrees with their clones (`BACKEND_REPOS`). The container goes when the run ends. With `SANDBOX=none` the commands run on this machine. |
+| package downloads (`SANDBOX=docker`) | one volume, `CACHE_VOLUME` (default `factory-cache`), holds them for every ticket's container. Empty means no volume. |
 
 - **Fail closed:** if the ticket's branch is checked out in another folder, the ticket is blocked instead of mixing two runs on one branch.
 - **Cleanup:** `ff gc` removes a worktree once its PR is merged or closed (and the local branch once merged), or after `GC_DAYS` idle.
@@ -167,7 +169,7 @@ Each role has an ordered chain of `<provider>/<model>` from pi-ai's catalog, pre
 ## Intake
 
 ### Sentry: production issues
-Set `SENTRY_AUTH_TOKEN` (a token with `event:read`), `SENTRY_ORG` and optionally `SENTRY_PROJECTS`. Every `SENTRY_POLL_INTERVAL` (and on *Sync now*) the factory lists unresolved issues of `SENTRY_ENVIRONMENT` (default `production`; several allowed, comma-separated, e.g. `prod,production`) from the last `SENTRY_PERIOD`. `SENTRY_PROJECTS` takes project ids.
+Set `SENTRY_AUTH_TOKEN` (a token with `event:read`), `SENTRY_ORG` and optionally `SENTRY_PROJECTS`. `SENTRY_URL` points at a region such as `https://us.sentry.io`, or at a self-hosted Sentry. Every `SENTRY_POLL_INTERVAL` (and on *Sync now*) the factory lists unresolved issues of `SENTRY_ENVIRONMENT` (default `production`; several allowed, comma-separated, e.g. `prod,production`) from the last `SENTRY_PERIOD`. `SENTRY_PROJECTS` takes project ids.
 - **Fix first** ranks them: Sentry's priority × level × log(events) × (1 + log(users)) × how recently it was seen, ×1.5 when unhandled.
 - **Your decisions are kept:** a sync updates Sentry's fields, never your triage. An issue Sentry no longer lists is shown as resolved. A dismissed issue that Sentry newly marks as regressed comes back.
 - **Fix this** creates one ClickUp ticket per issue in `SENTRY_CLICKUP_LIST_ID` (assigned to you, `S_TODO`, tag `sentry`) with the issue, its counts and the latest event's exception and in-app stack, and starts its pipeline: the spec writer finds the root cause, and the test writer reproduces it first.
@@ -192,6 +194,8 @@ Set `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder; the sprint whose dates cover
 - **Live preview of the spec and plan:** click a spec or plan step: the reader opens the file, and while the step runs it shows the file as the agent types it (the write call is streamed from the model, argument by argument).
 - **Steer:** your message joins the running step after its current tool round.
 - **Spend:** today's model spend against the daily budget, in the sidebar and a stat card, and any request waiting for a rate limit.
+- **Quality:** the numbers of every run. Judge score, criteria met, review rounds to PASS and repairs are there. So are failed checks, human comments, human rework, cost and time. It shows the same numbers as `ff scoreboard`.
+- **Settings:** the model chain of each agent role, with its fallbacks. A change applies to the next step that starts. The page saves it to `durable/lanes.json`.
 - **Performance:** a view for CPU, memory, agents, tokens and first-token time, sampled once a second by the server. Four stat cards show this process's CPU (with the machine, load and event loop lag), the running agents, today's tokens and the latest first token. Three strip graphs, long on time and short on value like a torrent client, draw the last five minutes: process and machine CPU, output and input tokens a second, and the first-token time (a gap where there was no request). The chip in the bar says *CPU saturated* or *event loop blocked* when the machine is the bottleneck. Below, the running steps and the last twelve that ended list their model, time, tokens, tokens a second, first-token time and cost. The *Refresh* Select sets 1, 5 or 10 seconds, only this view polls, and the browser keeps the choice. `GET /api/performance` gives the same data.
 
 ### Rate limits and the daily budget
@@ -216,7 +220,8 @@ Every model request of every agent goes through one throttle (`durable/src/throt
     ff status | show <ticket>  what every ticket is doing | one ticket's steps
     ff logs <ticket>           everything that happened to a ticket, oldest first
     ff lessons                 what the coordinator learned from failures (state/lessons.md)
-    ff usage                   today's model spend per provider, the rate limits, what is waiting
+    ff usage                   today's model spend, the rate limits, what waits
+    ff scoreboard              judge scores, criteria met, reviews to PASS, repairs, cost, time
     ff sentry [sync] | fix <issue id> | sprint
     ff gc [days]               remove worktrees of merged or closed PRs, or idle ones
     ff index <cmd>             the code index agents search: build, update, status, search, map, bench, clean
@@ -246,7 +251,7 @@ Create the tracker statuses named in `config.env`, or map them to existing ones.
 - **Your sprint:** `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder) or `CLICKUP_SPRINT_LIST_ID`.
 - **Sentry:** `SENTRY_ORG`, `SENTRY_PROJECTS`, `SENTRY_CLICKUP_LIST_ID`, and `ff login SENTRY_AUTH_TOKEN`.
 - **The repo:** `REPO`, `BASE`, `SETUP_CMD` (e.g. `npm ci`) and `VERIFY_CMD` (e.g. `npm test`).
-- **Backend repos:** `BACKEND_REPOS="name=url ..."` and `BACKEND_BASE`. Each ticket gets a worktree of each repo on its own branch. The spec and plan read them, and the plan names the repos it changes on a `Repos:` line. The factory pushes a changed backend repo and opens its draft PR first. The PR in `REPO` links it under `Depends on:`.
+- **Backend repos:** `BACKEND_REPOS="name=url ..."` and `BACKEND_BASE`. Each ticket gets a worktree of each repo on its own branch. The spec and plan read them, and the plan names the repos it changes on a `Repos:` line. The factory pushes a changed backend repo and opens its draft PR first. `BACKEND_VERIFY_CMD`, when set, runs in the sandbox in that repo before its push. The PR in `REPO` links it under `Depends on:`.
 - **A browser check of UI changes:** `RUNTIME_CHECK=1`. It uses the Chromium in the sandbox image and adds `agents/runtime.md` before the review.
 - **A second model provider** (e.g. `ff login OPENAI_API_KEY`), so code is reviewed by another model family.
 
