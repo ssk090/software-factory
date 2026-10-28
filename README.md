@@ -222,7 +222,7 @@ A ticket is a key (`CHP-1234`), an id or a URL; with `CLICKUP_ID_PREFIX=CHP`, a 
 
 ## Setup (laptop)
 
-    cd durable && npm ci && cd ..          # Pi Durable and pi-ai, pinned by package-lock.json (Docker and CI use npm too)
+    cd durable && npm ci && cd ..          # Pi Durable and pi-ai, pinned by package-lock.json (Docker and CI use npm too; not pnpm or yarn)
     ln -s "$PWD/durable/bin/ff" ~/.local/bin/ff
     cp config.example.env config.env       # the one file for settings and secrets (mode 600)
     ff whoami                              # copy the ClickUp ids into config.env
@@ -230,6 +230,8 @@ A ticket is a key (`CHP-1234`), an id or a URL; with `CLICKUP_ID_PREFIX=CHP`, a 
     docker build -t software-factory .     # the sandbox image (skip with SANDBOX=none)
     ff doctor
     ff serve                               # then open http://127.0.0.1:8090
+
+Docker and CI run the Node in `.node-version` and the npm it brings (`packageManager` in `durable/package.json`); use the same on a laptop to install what CI tested. `durable/.npmrc` keeps dependencies' install scripts from running and refuses a Node older than `engines`.
 
 Create the tracker statuses named in `config.env`, or map them to existing ones. Then, in `config.env`:
 - **Your sprint:** `CLICKUP_SPRINT_FOLDER_ID` (the Sprints folder) or `CLICKUP_SPRINT_LIST_ID`.

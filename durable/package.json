@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "description": "The software factory's core on Pi Durable: ticket pipelines, agent steps, intake and the dashboard, in one durable session.",
+  "packageManager": "npm@10.9.9",
   "engines": {
     "node": ">=22.19.0"
   },
