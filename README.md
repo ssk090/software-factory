@@ -164,6 +164,8 @@ Every agent file starts with a header such as `skills: implement, tdd, ponytail`
 ### Models (`durable/lanes.json`)
 Each role has an ordered chain of `<provider>/<model>` from pi-ai's catalog, preferred first. An entry without a login (its provider's API key) is skipped; a model that fails a step (after the provider's own retries) moves the step to the next entry. The reviewer does not use the coder's model family, and the judge does not use the reviewer's. Code is never graded by its author or its reviewer. When no other family has a login the step uses the same family and says so in `route.log` (`ff doctor` warns). `runs/<ticket>/route.log` shows what was skipped and why.
 
+With a `TYPESAFE_API_KEY`, [Jev](https://typesafe.ai) reads the ticket once, at fetch, and decides where each chain starts: routine work at the first entry, moderate work at the second, hard or expensive-to-undo work at the third. It never picks a model itself. No key, an error or a timeout starts every chain at the first entry. The answers are a ticket event and a line in `route.log`.
+
 ---
 
 ## Intake
@@ -332,7 +334,7 @@ Every setting, with its default, is in `config.example.env`.
 No network: a scratch repo with an origin, a fake tracker and git host, and pi-ai's faux model playing every agent from its prompt (`durable/test/support.ts`). They cover the whole pipeline to a reviewed PR; the gate and your note; a restart mid tool call (the same conversation continues and hears its call was interrupted); `kill -9` of the factory mid step (it continues, and the command it left running is ended); frozen tests; the verify gate's second try; steering; stopping; pausing mid-step (the step's next request waits, its paused time is not its own) and the timeline it leaves; the daily budget pausing tickets; the throttle's rate windows, budget ledger and holds; the reviewer's family rule; Sentry paging, merging, ranking and *Fix this*; the sprint; a failing model moving to the next one; running a ticket again after a stop and after a finished run; the dashboard's host, token and password rules and its API; and, with Docker, the sandbox container (variables, no host secrets, killing a process group, reaping) and a ticket container's `ff index search` against the read-only index mount. The code index has its own suite: the Merkle tree, the chunker's line ranges, what the walk skips (ignored, binary, oversized, secret), the delta update, search and its filters, the ticket's seeded scope, and `INDEX_REF` through a snapshot. CI also builds the image and runs a whole pipeline in the docker sandbox (`SF_DOCKER_PIPELINE=1`).
 
 ## Roadmap
-Planned, not built: agents that choose their skills from Superpowers and mattpocock/skills, Jev (a decision model) for the factory's choices, and models routed by the ticket, the spec and the plan, after [jroute](https://github.com/ssk090/jroute). See [ROADMAP.md](ROADMAP.md).
+Built: Jev reads the ticket at fetch and decides where each model chain starts. Not built: agents that choose their skills from Superpowers and mattpocock/skills, routing by the spec and the plan, quota before a step, and the Changes tab's side-by-side view. See [ROADMAP.md](ROADMAP.md).
 
 ## Known limits
 - **Pi Durable is experimental:** its API may change between releases. Versions are pinned in `durable/package-lock.json`; upgrade on purpose and run the tests.

@@ -11,3 +11,5 @@ credentials.json
 durable/node_modules
 .claude
 .agents
+backends/
+

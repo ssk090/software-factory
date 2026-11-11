@@ -69,8 +69,9 @@ export function startIndex(answers: JevAnswers | null): number {
 	return c >= 2 ? 1 : 0;
 }
 
-/** One line for the timeline: what Jev said. */
+/** One line for the timeline: what Jev said, and nothing it did not answer. */
 export function describe(answers: JevAnswers): string {
 	const c = complexity(answers);
-	return [answers.family?.choice, c === null ? null : `complexity ${c}`, `consequence ${noul(answers, "consequence").toFixed(2)}`].filter(Boolean).join(", ");
+	const risk = answers.consequence?.noul;
+	return [answers.family?.choice, c === null ? null : `complexity ${c}`, risk === undefined ? null : `consequence ${risk.toFixed(2)}`].filter(Boolean).join(", ");
 }
