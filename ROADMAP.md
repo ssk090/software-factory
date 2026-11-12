@@ -1,7 +1,7 @@
 # Roadmap
 
-Planned work, not built yet. Each item says what it is, why, how it fits the factory, and what is
-still open. The order is the suggested order: each item uses the one before it.
+Planned work, and what of it is already built. Each item says what it is, why, how it fits the
+factory, and what is still open. The order is the suggested order: each item uses the one before it.
 
 ## 1. Agents choose their skills from Superpowers and mattpocock/skills
 
@@ -42,6 +42,15 @@ probabilities. jroute calls it once per task (`POST https://api.typesafe.ai/v1/s
 
 `config.env` already holds a `TYPESAFE_API_KEY`.
 
+**Built.** The call at `fetch` (`durable/src/jev.ts`, from `pipeline.ts`), the redaction before the
+text leaves, the `JEV_FIXTURE` replay for tests, the answers as a ticket event and a `route.log` line,
+and the start offset each lane uses. Optional throughout: no key, an error or a timeout leaves every
+chain at its first entry.
+
+**Next.** The second call, after the plan and before the gate, and the answers that shape the run
+(a chore skips the docs writer and the judge; a high `consequence` keeps the spec gate on when
+`SPEC_GATE=0` and adds a review round).
+
 **Where the factory asks.**
 - At `fetch`: on the ticket (and the Sentry issue, if it came from one).
 - After the plan, before the gate: on the spec and the plan, which say much more than the ticket.
@@ -54,14 +63,9 @@ probabilities. jroute calls it once per task (`POST https://api.typesafe.ai/v1/s
 - later, the order of *Fix first* for Sentry issues.
 
 **Rules.**
-- Optional. No key, a failure or a timeout means the factory works as now (lanes in order).
 - One batched call per decision point, through the throttle (item 3 counts its cost).
 - Text leaves the machine: redact credential-shaped strings first, as jroute does, and send only
   the ticket, spec and plan, never code or `config.env`.
-- Every answer is a ticket event (the timeline shows "Jev: debug, hard, consequence 0.8") and a
-  line in `route.log`, so a routing choice can be explained afterwards.
-- Tests replay a recorded answer from a file (jroute's `JROUTE_JEV_FIXTURE`), with no key and no
-  network.
 
 **Open.** Whether to call Jev again after a failed verify or a FIX review, and what it may change
 then. The price per call.
@@ -74,16 +78,18 @@ ordered model chain per role (`durable/lanes.json`).
 **Now.** Each role has a chain, preferred first; a step takes the first usable model and moves to
 the next on a failure. The reviewer and the judge never use the coder's family.
 
-**Next.** jroute's rule: *Jev never picks a model, it picks where to start in the chain.*
-- Each chain is ordered cheap to strong (or a role gets two chains). Jev's `complexity` and
-  `consequence` give a start offset: routine work starts at the cheap end; hard work, or work that
-  is expensive to undo, starts further along and does not waste a failed attempt on a cheap model.
+**Built.** jroute's rule: *Jev never picks a model, it picks where to start in the chain.* Each
+chain is ordered cheap to strong; Jev's `complexity` and `consequence` give the start offset, so
+routine work starts at the cheap end and hard, or expensive-to-undo, work starts further along
+instead of wasting a cheap attempt. The start is clamped to the last usable entry, a failure moves on
+from where the step started, and the family rule holds: the reviewer and the judge never run on the
+coder's family.
+
+**Next.**
 - The spec writer and the planner are routed by the ticket. The test writer, coder and fixer are
   routed again by the spec and plan (the second Jev call), since they say how big the change is.
 - Quota and spend: a provider at its daily budget or rate limit (the throttle knows) leaves the
   candidate set before a step starts, rather than after it fails, like jroute's quota check.
-- The family rule stays: the reviewer and the judge never run on the coder's family.
-- A failure still moves along the chain from where the step started.
 
 **Open.** Whether a role needs two chains (fast and deep) or one ordered chain is enough.
 Per-provider quota for subscriptions (jroute reads Codex, Cursor and OpenCode usage) versus API keys
